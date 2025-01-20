@@ -1,72 +1,112 @@
-import { makeStyles, Theme } from "@material-ui/core/styles"
-import { FC } from "react"
-import { MONOSPACE_FONT_FAMILY } from "theme/constants"
-import { PaletteIndex } from "theme/palettes"
-import { combineClasses } from "util/combineClasses"
+import type { Interpolation, Theme } from "@emotion/react";
+import CircularProgress, {
+	type CircularProgressProps,
+} from "@mui/material/CircularProgress";
+import {
+	type FC,
+	type HTMLAttributes,
+	type ReactNode,
+	forwardRef,
+	useMemo,
+} from "react";
+import type { ThemeRole } from "theme/roles";
 
-export interface PillProps {
-  className?: string
-  icon?: React.ReactNode
-  text: string
-  type?: PaletteIndex
-  lightBorder?: boolean
-}
+export type PillProps = HTMLAttributes<HTMLDivElement> & {
+	icon?: ReactNode;
+	type?: ThemeRole;
+	size?: "md" | "lg";
+};
 
-export const Pill: FC<PillProps> = (props) => {
-  const { className, icon, text = false } = props
-  const styles = useStyles(props)
-  return (
-    <div
-      className={combineClasses([styles.wrapper, styles.pillColor, className])}
-      role="status"
-    >
-      {icon && <div className={styles.iconWrapper}>{icon}</div>}
-      {text}
-    </div>
-  )
-}
+const themeStyles = (type: ThemeRole) => (theme: Theme) => {
+	const palette = theme.roles[type];
+	return {
+		backgroundColor: palette.background,
+		borderColor: palette.outline,
+	};
+};
 
-const useStyles = makeStyles<Theme, PillProps>((theme) => ({
-  wrapper: {
-    fontFamily: MONOSPACE_FONT_FAMILY,
-    display: "inline-flex",
-    alignItems: "center",
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderRadius: 99999,
-    fontSize: 14,
-    fontWeight: 500,
-    color: "#FFF",
-    height: theme.spacing(3),
-    paddingLeft: ({ icon }) =>
-      icon ? theme.spacing(0.75) : theme.spacing(1.5),
-    paddingRight: theme.spacing(1.5),
-    whiteSpace: "nowrap",
-  },
+const PILL_HEIGHT = 24;
+const PILL_ICON_SIZE = 14;
+const PILL_ICON_SPACING = (PILL_HEIGHT - PILL_ICON_SIZE) / 2;
 
-  pillColor: {
-    backgroundColor: ({ type }) =>
-      type ? theme.palette[type].dark : theme.palette.text.secondary,
-    borderColor: ({ type, lightBorder }) =>
-      type
-        ? lightBorder
-          ? theme.palette[type].light
-          : theme.palette[type].main
-        : theme.palette.text.secondary,
-  },
+export const Pill: FC<PillProps> = forwardRef<HTMLDivElement, PillProps>(
+	(props, ref) => {
+		const {
+			icon,
+			type = "inactive",
+			children,
+			size = "md",
+			...divProps
+		} = props;
+		const typeStyles = useMemo(() => themeStyles(type), [type]);
 
-  iconWrapper: {
-    marginRight: theme.spacing(0.5),
-    width: theme.spacing(2),
-    height: theme.spacing(2),
-    lineHeight: 0,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
+		return (
+			<div
+				ref={ref}
+				css={[
+					styles.pill,
+					icon && size === "md" && styles.pillWithIcon,
+					size === "lg" && styles.pillLg,
+					icon && size === "lg" && styles.pillLgWithIcon,
+					typeStyles,
+				]}
+				{...divProps}
+			>
+				{icon}
+				{children}
+			</div>
+		);
+	},
+);
 
-    "& > svg": {
-      width: theme.spacing(2),
-      height: theme.spacing(2),
-    },
-  },
-}))
+export const PillSpinner: FC<CircularProgressProps> = (props) => {
+	return (
+		<CircularProgress size={PILL_ICON_SIZE} css={styles.spinner} {...props} />
+	);
+};
+
+const styles = {
+	pill: (theme) => ({
+		fontSize: 12,
+		color: theme.experimental.l1.text,
+		cursor: "default",
+		display: "inline-flex",
+		alignItems: "center",
+		whiteSpace: "nowrap",
+		fontWeight: 400,
+		borderWidth: 1,
+		borderStyle: "solid",
+		borderRadius: 99999,
+		lineHeight: 1,
+		height: PILL_HEIGHT,
+		gap: PILL_ICON_SPACING,
+		paddingLeft: 12,
+		paddingRight: 12,
+
+		"& svg": {
+			width: PILL_ICON_SIZE,
+			height: PILL_ICON_SIZE,
+		},
+	}),
+
+	pillWithIcon: {
+		paddingLeft: PILL_ICON_SPACING,
+	},
+
+	pillLg: {
+		gap: PILL_ICON_SPACING * 2,
+		padding: "14px 16px",
+	},
+
+	pillLgWithIcon: {
+		paddingLeft: PILL_ICON_SPACING * 2,
+	},
+
+	spinner: (theme) => ({
+		color: theme.experimental.l1.text,
+		// It is necessary to align it with the MUI Icons internal padding
+		"& svg": {
+			transform: "scale(.75)",
+		},
+	}),
+} satisfies Record<string, Interpolation<Theme>>;

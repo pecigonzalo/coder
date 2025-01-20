@@ -6,11 +6,38 @@ import (
 	"os"
 
 	"github.com/gliderlabs/ssh"
+	"golang.org/x/xerrors"
 )
 
-// PTY is a minimal interface for interacting with a TTY.
+// ErrClosed is returned when a PTY is used after it has been closed.
+var ErrClosed = xerrors.New("pty: closed")
+
+// PTYCmd is an interface for interacting with a pseudo-TTY where we control
+// only one end, and the other end has been passed to a running os.Process.
+// nolint:revive
+type PTYCmd interface {
+	io.Closer
+
+	// Resize sets the size of the PTY.
+	Resize(height uint16, width uint16) error
+
+	// OutputReader returns an io.Reader for reading the output from the process
+	// controlled by the pseudo-TTY
+	OutputReader() io.Reader
+
+	// InputWriter returns an io.Writer for writing into to the process
+	// controlled by the pseudo-TTY
+	InputWriter() io.Writer
+}
+
+// PTY is a minimal interface for interacting with pseudo-TTY where this
+// process retains access to _both_ ends of the pseudo-TTY (i.e. `ptm` & `pts`
+// on Linux).
 type PTY interface {
 	io.Closer
+
+	// Resize sets the size of the PTY.
+	Resize(height uint16, width uint16) error
 
 	// Name of the TTY. Example on Linux would be "/dev/pts/1".
 	Name() string
@@ -30,9 +57,6 @@ type PTY interface {
 	//
 	// The same stream would be used to provide user input: pty.Input().Write(...)
 	Input() ReadWriter
-
-	// Resize sets the size of the PTY.
-	Resize(height uint16, width uint16) error
 }
 
 // Process represents a process running in a PTY.  We need to trigger special processing on the PTY
@@ -46,6 +70,11 @@ type Process interface {
 
 	// Kill the command process.  Returned error is as for os.Process.Kill()
 	Kill() error
+
+	// Signal sends a signal to the command process. On non-windows systems, the
+	// returned error is as for os.Process.Signal(), on Windows it's
+	// as for os.Process.Kill().
+	Signal(sig os.Signal) error
 }
 
 // WithFlags represents a PTY whose flags can be inspected, in particular
@@ -61,8 +90,9 @@ type WithFlags interface {
 type Option func(*ptyOptions)
 
 type ptyOptions struct {
-	logger *log.Logger
-	sshReq *ssh.Pty
+	logger    *log.Logger
+	sshReq    *ssh.Pty
+	setGPGTTY bool
 }
 
 // WithSSHRequest applies the ssh.Pty request to the PTY.
@@ -81,6 +111,14 @@ func WithLogger(logger *log.Logger) Option {
 	}
 }
 
+// WithGPGTTY sets the GPG_TTY environment variable to the PTY name. This only
+// applies to non-Windows platforms.
+func WithGPGTTY() Option {
+	return func(opts *ptyOptions) {
+		opts.setGPGTTY = true
+	}
+}
+
 // New constructs a new Pty.
 func New(opts ...Option) (PTY, error) {
 	return newPty(opts...)
@@ -90,8 +128,8 @@ func New(opts ...Option) (PTY, error) {
 // underlying file descriptors, one for reading and one for writing, and allows
 // them to be accessed separately.
 type ReadWriter struct {
-	Reader *os.File
-	Writer *os.File
+	Reader io.Reader
+	Writer io.Writer
 }
 
 func (rw ReadWriter) Read(p []byte) (int, error) {

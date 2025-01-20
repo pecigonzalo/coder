@@ -1,230 +1,350 @@
-import TextField from "@material-ui/core/TextField"
-import * as TypesGen from "api/typesGenerated"
-import { FormFooter } from "components/FormFooter/FormFooter"
-import { FullPageForm } from "components/FullPageForm/FullPageForm"
-import { Loader } from "components/Loader/Loader"
-import { ParameterInput } from "components/ParameterInput/ParameterInput"
-import { Stack } from "components/Stack/Stack"
-import { UserAutocomplete } from "components/UserAutocomplete/UserAutocomplete"
-import { WorkspaceQuota } from "components/WorkspaceQuota/WorkspaceQuota"
-import { FormikContextType, FormikTouched, useFormik } from "formik"
-import { i18n } from "i18n"
-import { FC, useState } from "react"
-import { useTranslation } from "react-i18next"
-import { getFormHelpers, nameValidator, onChangeTrimmed } from "util/formUtils"
-import * as Yup from "yup"
-import { AlertBanner } from "components/AlertBanner/AlertBanner"
+import type { Interpolation, Theme } from "@emotion/react";
+import FormHelperText from "@mui/material/FormHelperText";
+import TextField from "@mui/material/TextField";
+import type * as TypesGen from "api/typesGenerated";
+import { Alert } from "components/Alert/Alert";
+import { ErrorAlert } from "components/Alert/ErrorAlert";
+import { Avatar } from "components/Avatar/Avatar";
+import { Button } from "components/Button/Button";
+import {
+	FormFields,
+	FormFooter,
+	FormSection,
+	HorizontalForm,
+} from "components/Form/Form";
+import { Margins } from "components/Margins/Margins";
+import {
+	PageHeader,
+	PageHeaderSubtitle,
+	PageHeaderTitle,
+} from "components/PageHeader/PageHeader";
+import { Pill } from "components/Pill/Pill";
+import { RichParameterInput } from "components/RichParameterInput/RichParameterInput";
+import { Spinner } from "components/Spinner/Spinner";
+import { Stack } from "components/Stack/Stack";
+import { UserAutocomplete } from "components/UserAutocomplete/UserAutocomplete";
+import { type FormikContextType, useFormik } from "formik";
+import { generateWorkspaceName } from "modules/workspaces/generateWorkspaceName";
+import { type FC, useCallback, useEffect, useMemo, useState } from "react";
+import {
+	getFormHelpers,
+	nameValidator,
+	onChangeTrimmed,
+} from "utils/formUtils";
+import {
+	type AutofillBuildParameter,
+	getInitialRichParameterValues,
+	useValidationSchemaForRichParameters,
+} from "utils/richParameters";
+import * as Yup from "yup";
+import type {
+	CreateWorkspaceMode,
+	ExternalAuthPollingState,
+} from "./CreateWorkspacePage";
+import { ExternalAuthButton } from "./ExternalAuthButton";
+import type { CreateWSPermissions } from "./permissions";
 
-export enum CreateWorkspaceErrors {
-  GET_TEMPLATES_ERROR = "getTemplatesError",
-  GET_TEMPLATE_SCHEMA_ERROR = "getTemplateSchemaError",
-  CREATE_WORKSPACE_ERROR = "createWorkspaceError",
-  GET_WORKSPACE_QUOTA_ERROR = "getWorkspaceQuotaError",
-}
+export const Language = {
+	duplicationWarning:
+		"Duplicating a workspace only copies its parameters. No state from the old workspace is copied over.",
+} as const;
 
 export interface CreateWorkspacePageViewProps {
-  loadingTemplates: boolean
-  loadingTemplateSchema: boolean
-  creatingWorkspace: boolean
-  hasTemplateErrors: boolean
-  templateName: string
-  templates?: TypesGen.Template[]
-  selectedTemplate?: TypesGen.Template
-  templateSchema?: TypesGen.ParameterSchema[]
-  workspaceQuota?: TypesGen.WorkspaceQuota
-  createWorkspaceErrors: Partial<Record<CreateWorkspaceErrors, Error | unknown>>
-  canCreateForUser?: boolean
-  owner: TypesGen.User | null
-  setOwner: (arg0: TypesGen.User | null) => void
-  onCancel: () => void
-  onSubmit: (req: TypesGen.CreateWorkspaceRequest) => void
-  // initialTouched is only used for testing the error state of the form.
-  initialTouched?: FormikTouched<TypesGen.CreateWorkspaceRequest>
+	mode: CreateWorkspaceMode;
+	defaultName?: string | null;
+	disabledParams?: string[];
+	error: unknown;
+	resetMutation: () => void;
+	defaultOwner: TypesGen.User;
+	template: TypesGen.Template;
+	versionId?: string;
+	externalAuth: TypesGen.TemplateVersionExternalAuth[];
+	externalAuthPollingState: ExternalAuthPollingState;
+	startPollingExternalAuth: () => void;
+	hasAllRequiredExternalAuth: boolean;
+	parameters: TypesGen.TemplateVersionParameter[];
+	autofillParameters: AutofillBuildParameter[];
+	permissions: CreateWSPermissions;
+	creatingWorkspace: boolean;
+	onCancel: () => void;
+	onSubmit: (
+		req: TypesGen.CreateWorkspaceRequest,
+		owner: TypesGen.User,
+	) => void;
 }
 
-const { t } = i18n
+export const CreateWorkspacePageView: FC<CreateWorkspacePageViewProps> = ({
+	mode,
+	defaultName,
+	disabledParams,
+	error,
+	resetMutation,
+	defaultOwner,
+	template,
+	versionId,
+	externalAuth,
+	externalAuthPollingState,
+	startPollingExternalAuth,
+	hasAllRequiredExternalAuth,
+	parameters,
+	autofillParameters,
+	permissions,
+	creatingWorkspace,
+	onSubmit,
+	onCancel,
+}) => {
+	const [owner, setOwner] = useState(defaultOwner);
+	const [suggestedName, setSuggestedName] = useState(() =>
+		generateWorkspaceName(),
+	);
 
-export const validationSchema = Yup.object({
-  name: nameValidator(t("nameLabel", { ns: "createWorkspacePage" })),
-})
+	const rerollSuggestedName = useCallback(() => {
+		setSuggestedName(() => generateWorkspaceName());
+	}, []);
 
-export const CreateWorkspacePageView: FC<
-  React.PropsWithChildren<CreateWorkspacePageViewProps>
-> = (props) => {
-  const { t } = useTranslation("createWorkspacePage")
+	const form: FormikContextType<TypesGen.CreateWorkspaceRequest> =
+		useFormik<TypesGen.CreateWorkspaceRequest>({
+			initialValues: {
+				name: defaultName ?? "",
+				template_id: template.id,
+				rich_parameter_values: getInitialRichParameterValues(
+					parameters,
+					autofillParameters,
+				),
+			},
+			validationSchema: Yup.object({
+				name: nameValidator("Workspace Name"),
+				rich_parameter_values: useValidationSchemaForRichParameters(parameters),
+			}),
+			enableReinitialize: true,
+			onSubmit: (request) => {
+				if (!hasAllRequiredExternalAuth) {
+					return;
+				}
 
-  const [parameterValues, setParameterValues] = useState<
-    Record<string, string>
-  >({})
+				onSubmit(request, owner);
+			},
+		});
 
-  const form: FormikContextType<TypesGen.CreateWorkspaceRequest> =
-    useFormik<TypesGen.CreateWorkspaceRequest>({
-      initialValues: {
-        name: "",
-        template_id: props.selectedTemplate ? props.selectedTemplate.id : "",
-      },
-      enableReinitialize: true,
-      validationSchema,
-      initialTouched: props.initialTouched,
-      onSubmit: (request) => {
-        if (!props.templateSchema) {
-          throw new Error("No template schema loaded")
-        }
+	useEffect(() => {
+		if (error) {
+			window.scrollTo(0, 0);
+		}
+	}, [error]);
 
-        const createRequests: TypesGen.CreateParameterRequest[] = []
-        props.templateSchema.forEach((schema) => {
-          let value = schema.default_source_value
-          if (schema.name in parameterValues) {
-            value = parameterValues[schema.name]
-          }
-          createRequests.push({
-            name: schema.name,
-            destination_scheme: schema.default_destination_scheme,
-            source_scheme: "data",
-            source_value: value,
-          })
-        })
-        props.onSubmit({
-          ...request,
-          parameter_values: createRequests,
-        })
-        form.setSubmitting(false)
-      },
-    })
+	const getFieldHelpers = getFormHelpers<TypesGen.CreateWorkspaceRequest>(
+		form,
+		error,
+	);
 
-  const getFieldHelpers = getFormHelpers<TypesGen.CreateWorkspaceRequest>(
-    form,
-    props.createWorkspaceErrors[CreateWorkspaceErrors.CREATE_WORKSPACE_ERROR],
-  )
+	const autofillByName = useMemo(
+		() =>
+			Object.fromEntries(
+				autofillParameters.map((param) => [param.name, param]),
+			),
+		[autofillParameters],
+	);
 
-  if (props.hasTemplateErrors) {
-    return (
-      <Stack>
-        {Boolean(
-          props.createWorkspaceErrors[
-            CreateWorkspaceErrors.GET_TEMPLATES_ERROR
-          ],
-        ) && (
-          <AlertBanner
-            severity="error"
-            error={
-              props.createWorkspaceErrors[
-                CreateWorkspaceErrors.GET_TEMPLATES_ERROR
-              ]
-            }
-          />
-        )}
-        {Boolean(
-          props.createWorkspaceErrors[
-            CreateWorkspaceErrors.GET_TEMPLATE_SCHEMA_ERROR
-          ],
-        ) && (
-          <AlertBanner
-            severity="error"
-            error={
-              props.createWorkspaceErrors[
-                CreateWorkspaceErrors.GET_TEMPLATE_SCHEMA_ERROR
-              ]
-            }
-          />
-        )}
-      </Stack>
-    )
-  }
+	return (
+		<Margins size="medium">
+			<PageHeader
+				actions={
+					<Button size="sm" variant="outline" onClick={onCancel}>
+						Cancel
+					</Button>
+				}
+			>
+				<Stack direction="row">
+					<Avatar
+						variant="icon"
+						size="lg"
+						src={template.icon}
+						fallback={template.name}
+					/>
 
-  const canSubmit =
-    props.workspaceQuota && props.workspaceQuota.user_workspace_limit > 0
-      ? props.workspaceQuota.user_workspace_count <
-        props.workspaceQuota.user_workspace_limit
-      : true
+					<div>
+						<PageHeaderTitle>
+							{template.display_name.length > 0
+								? template.display_name
+								: template.name}
+						</PageHeaderTitle>
 
-  return (
-    <FullPageForm title="Create workspace" onCancel={props.onCancel}>
-      <form onSubmit={form.handleSubmit}>
-        <Stack>
-          {Boolean(
-            props.createWorkspaceErrors[
-              CreateWorkspaceErrors.CREATE_WORKSPACE_ERROR
-            ],
-          ) && (
-            <AlertBanner
-              severity="error"
-              error={
-                props.createWorkspaceErrors[
-                  CreateWorkspaceErrors.CREATE_WORKSPACE_ERROR
-                ]
-              }
-            />
-          )}
-          <TextField
-            disabled
-            fullWidth
-            label={t("templateLabel")}
-            value={props.selectedTemplate?.name || props.templateName}
-            variant="outlined"
-          />
+						<PageHeaderSubtitle condensed>New workspace</PageHeaderSubtitle>
+					</div>
 
-          {props.loadingTemplateSchema && <Loader />}
-          {props.selectedTemplate && props.templateSchema && (
-            <>
-              <TextField
-                {...getFieldHelpers("name")}
-                disabled={form.isSubmitting}
-                onChange={onChangeTrimmed(form)}
-                autoFocus
-                fullWidth
-                label={t("nameLabel")}
-                variant="outlined"
-              />
+					{template.deprecated && <Pill type="warning">Deprecated</Pill>}
+				</Stack>
+			</PageHeader>
 
-              {props.canCreateForUser && (
-                <UserAutocomplete
-                  value={props.owner}
-                  onChange={props.setOwner}
-                  label={t("ownerLabel")}
-                  inputMargin="dense"
-                  showAvatar
-                />
-              )}
+			<HorizontalForm
+				name="create-workspace-form"
+				onSubmit={form.handleSubmit}
+				css={{ padding: "16px 0" }}
+			>
+				{Boolean(error) && <ErrorAlert error={error} />}
 
-              {props.workspaceQuota && (
-                <WorkspaceQuota
-                  quota={props.workspaceQuota}
-                  error={
-                    props.createWorkspaceErrors[
-                      CreateWorkspaceErrors.GET_WORKSPACE_QUOTA_ERROR
-                    ]
-                  }
-                />
-              )}
+				{mode === "duplicate" && (
+					<Alert severity="info" dismissible data-testid="duplication-warning">
+						{Language.duplicationWarning}
+					</Alert>
+				)}
 
-              {props.templateSchema.length > 0 && (
-                <Stack>
-                  {props.templateSchema.map((schema) => (
-                    <ParameterInput
-                      disabled={form.isSubmitting}
-                      key={schema.id}
-                      onChange={(value) => {
-                        setParameterValues({
-                          ...parameterValues,
-                          [schema.name]: value,
-                        })
-                      }}
-                      schema={schema}
-                    />
-                  ))}
-                </Stack>
-              )}
+				{/* General info */}
+				<FormSection
+					title="General"
+					description={
+						permissions.createWorkspaceForUser
+							? "The name of the workspace and its owner. Only admins can create workspaces for other users."
+							: "The name of your new workspace."
+					}
+				>
+					<FormFields>
+						{versionId && versionId !== template.active_version_id && (
+							<Stack spacing={1} css={styles.hasDescription}>
+								<TextField
+									disabled
+									fullWidth
+									value={versionId}
+									label="Version ID"
+								/>
+								<span css={styles.description}>
+									This parameter has been preset, and cannot be modified.
+								</span>
+							</Stack>
+						)}
 
-              <FormFooter
-                onCancel={props.onCancel}
-                isLoading={props.creatingWorkspace}
-                submitDisabled={!canSubmit}
-              />
-            </>
-          )}
-        </Stack>
-      </form>
-    </FullPageForm>
-  )
-}
+						<div>
+							<TextField
+								{...getFieldHelpers("name")}
+								disabled={creatingWorkspace}
+								// resetMutation facilitates the clearing of validation errors
+								onChange={onChangeTrimmed(form, resetMutation)}
+								fullWidth
+								label="Workspace Name"
+							/>
+							<FormHelperText data-chromatic="ignore">
+								Need a suggestion?{" "}
+								<Button
+									variant="subtle"
+									size="sm"
+									css={styles.nameSuggestion}
+									onClick={async () => {
+										await form.setFieldValue("name", suggestedName);
+										rerollSuggestedName();
+									}}
+								>
+									{suggestedName}
+								</Button>
+							</FormHelperText>
+						</div>
+
+						{permissions.createWorkspaceForUser && (
+							<UserAutocomplete
+								value={owner}
+								onChange={(user) => {
+									setOwner(user ?? defaultOwner);
+								}}
+								label="Owner"
+								size="medium"
+							/>
+						)}
+					</FormFields>
+				</FormSection>
+
+				{externalAuth && externalAuth.length > 0 && (
+					<FormSection
+						title="External Authentication"
+						description="This template uses external services for authentication."
+					>
+						<FormFields>
+							{Boolean(error) && !hasAllRequiredExternalAuth && (
+								<Alert severity="error">
+									To create a workspace using this template, please connect to
+									all required external authentication providers listed below.
+								</Alert>
+							)}
+							{externalAuth.map((auth) => (
+								<ExternalAuthButton
+									key={auth.id}
+									error={error}
+									auth={auth}
+									isLoading={externalAuthPollingState === "polling"}
+									onStartPolling={startPollingExternalAuth}
+									displayRetry={externalAuthPollingState === "abandoned"}
+								/>
+							))}
+						</FormFields>
+					</FormSection>
+				)}
+
+				{parameters.length > 0 && (
+					<FormSection
+						title="Parameters"
+						description="These are the settings used by your template. Please note that immutable parameters cannot be modified once the workspace is created."
+					>
+						{/* The parameter fields are densely packed and carry significant information,
+                hence they require additional vertical spacing for better readability and
+                user experience. */}
+						<FormFields css={{ gap: 36 }}>
+							{parameters.map((parameter, index) => {
+								const parameterField = `rich_parameter_values.${index}`;
+								const parameterInputName = `${parameterField}.value`;
+								const isDisabled =
+									disabledParams?.includes(
+										parameter.name.toLowerCase().replace(/ /g, "_"),
+									) || creatingWorkspace;
+
+								return (
+									<RichParameterInput
+										{...getFieldHelpers(parameterInputName)}
+										onChange={async (value) => {
+											await form.setFieldValue(parameterField, {
+												name: parameter.name,
+												value,
+											});
+										}}
+										key={parameter.name}
+										parameter={parameter}
+										parameterAutofill={autofillByName[parameter.name]}
+										disabled={isDisabled}
+									/>
+								);
+							})}
+						</FormFields>
+					</FormSection>
+				)}
+
+				<FormFooter>
+					<Button onClick={onCancel} variant="outline">
+						Cancel
+					</Button>
+					<Button
+						type="submit"
+						disabled={creatingWorkspace || !hasAllRequiredExternalAuth}
+					>
+						<Spinner loading={creatingWorkspace} />
+						Create workspace
+					</Button>
+				</FormFooter>
+			</HorizontalForm>
+		</Margins>
+	);
+};
+
+const styles = {
+	nameSuggestion: (theme) => ({
+		color: theme.roles.notice.fill.solid,
+		padding: "4px 8px",
+		lineHeight: "inherit",
+		fontSize: "inherit",
+		height: "unset",
+		minWidth: "unset",
+	}),
+	hasDescription: {
+		paddingBottom: 16,
+	},
+	description: (theme) => ({
+		fontSize: 13,
+		color: theme.palette.text.secondary,
+	}),
+} satisfies Record<string, Interpolation<Theme>>;

@@ -1,7 +1,6 @@
 package terraform
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,40 +10,39 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/xerrors"
+
+	"github.com/coder/coder/v2/testutil"
 )
 
 // nolint:paralleltest
 func Test_absoluteBinaryPath(t *testing.T) {
-	type args struct {
-		ctx context.Context
-	}
 	tests := []struct {
 		name             string
-		args             args
 		terraformVersion string
 		expectedErr      error
 	}{
 		{
 			name:             "TestCorrectVersion",
-			args:             args{ctx: context.Background()},
 			terraformVersion: "1.3.0",
 			expectedErr:      nil,
 		},
 		{
 			name:             "TestOldVersion",
-			args:             args{ctx: context.Background()},
 			terraformVersion: "1.0.9",
 			expectedErr:      terraformMinorVersionMismatch,
 		},
 		{
 			name:             "TestNewVersion",
-			args:             args{ctx: context.Background()},
 			terraformVersion: "1.3.0",
 			expectedErr:      nil,
 		},
 		{
+			name:             "TestNewestNewVersion",
+			terraformVersion: "9.9.9",
+			expectedErr:      nil,
+		},
+		{
 			name:             "TestMalformedVersion",
-			args:             args{ctx: context.Background()},
 			terraformVersion: "version",
 			expectedErr:      xerrors.Errorf("Terraform binary get version failed: Malformed version: version"),
 		},
@@ -56,6 +54,7 @@ func Test_absoluteBinaryPath(t *testing.T) {
 				t.Skip("Dummy terraform executable on Windows requires sh which isn't very practical.")
 			}
 
+			log := testutil.Logger(t)
 			// Create a temp dir with the binary
 			tempDir := t.TempDir()
 			terraformBinaryOutput := fmt.Sprintf(`#!/bin/sh
@@ -72,7 +71,7 @@ func Test_absoluteBinaryPath(t *testing.T) {
 			err := os.WriteFile(
 				filepath.Join(tempDir, "terraform"),
 				[]byte(terraformBinaryOutput),
-				0770,
+				0o770,
 			)
 			require.NoError(t, err)
 
@@ -85,7 +84,8 @@ func Test_absoluteBinaryPath(t *testing.T) {
 				expectedAbsoluteBinary = filepath.Join(tempDir, "terraform")
 			}
 
-			actualAbsoluteBinary, actualErr := absoluteBinaryPath(tt.args.ctx)
+			ctx := testutil.Context(t, testutil.WaitShort)
+			actualAbsoluteBinary, actualErr := absoluteBinaryPath(ctx, log)
 
 			require.Equal(t, expectedAbsoluteBinary, actualAbsoluteBinary)
 			if tt.expectedErr == nil {

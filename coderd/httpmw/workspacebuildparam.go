@@ -2,15 +2,13 @@ package httpmw
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 type workspaceBuildParamContextKey struct{}
@@ -29,12 +27,12 @@ func ExtractWorkspaceBuildParam(db database.Store) func(http.Handler) http.Handl
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-			workspaceBuildID, parsed := parseUUID(rw, r, "workspacebuild")
+			workspaceBuildID, parsed := ParseUUIDParam(rw, r, "workspacebuild")
 			if !parsed {
 				return
 			}
 			workspaceBuild, err := db.GetWorkspaceBuildByID(ctx, workspaceBuildID)
-			if errors.Is(err, sql.ErrNoRows) {
+			if httpapi.Is404Error(err) {
 				httpapi.ResourceNotFound(rw)
 				return
 			}

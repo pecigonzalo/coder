@@ -1,39 +1,30 @@
-import { makeStyles } from "@material-ui/core/styles"
-import { FC, ReactNode } from "react"
-import { FormCloseButton } from "../FormCloseButton/FormCloseButton"
-import { FormTitle } from "../FormTitle/FormTitle"
-import { Margins } from "../Margins/Margins"
+import { Margins } from "components/Margins/Margins";
+import {
+	PageHeader,
+	PageHeaderSubtitle,
+	PageHeaderTitle,
+} from "components/PageHeader/PageHeader";
+import type { FC, ReactNode } from "react";
 
 export interface FullPageFormProps {
-  title: string
-  detail?: ReactNode
-  onCancel: () => void
+	title: string;
+	detail?: ReactNode;
+	children?: ReactNode;
 }
 
-const useStyles = makeStyles(() => ({
-  root: {
-    width: "100%",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-  },
-}))
-
-export const FullPageForm: FC<React.PropsWithChildren<FullPageFormProps>> = ({
-  title,
-  detail,
-  onCancel,
-  children,
+export const FullPageForm: FC<FullPageFormProps> = ({
+	title,
+	detail,
+	children,
 }) => {
-  const styles = useStyles()
-  return (
-    <main className={styles.root}>
-      <Margins size="small">
-        <FormTitle title={title} detail={detail} />
-        <FormCloseButton onClose={onCancel} />
+	return (
+		<Margins size="small">
+			<PageHeader css={{ paddingBottom: 24 }}>
+				<PageHeaderTitle>{title}</PageHeaderTitle>
+				{detail && <PageHeaderSubtitle>{detail}</PageHeaderSubtitle>}
+			</PageHeader>
 
-        {children}
-      </Margins>
-    </main>
-  )
-}
+			<main>{children}</main>
+		</Margins>
+	);
+};

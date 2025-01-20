@@ -1,33 +1,41 @@
-import { makeStyles } from "@material-ui/core/styles"
-import { FC } from "react"
-import { containerWidth, sidePadding } from "../../theme/constants"
+import type { FC } from "react";
+import {
+	containerWidth,
+	containerWidthMedium,
+	sidePadding,
+} from "theme/constants";
 
-type Size = "regular" | "medium" | "small"
+type Size = "regular" | "medium" | "small";
 
 const widthBySize: Record<Size, number> = {
-  regular: containerWidth,
-  medium: containerWidth / 2,
-  small: containerWidth / 3,
-}
+	regular: containerWidth,
+	medium: containerWidthMedium,
+	small: containerWidth / 3,
+};
 
-const useStyles = makeStyles(() => ({
-  margins: {
-    margin: "0 auto",
-    maxWidth: ({ maxWidth }: { maxWidth: number }) => maxWidth,
-    padding: `0 ${sidePadding}px`,
-    flex: 1,
-    width: "100%",
-  },
-}))
+type MarginsProps = JSX.IntrinsicElements["div"] & {
+	size?: Size;
+};
 
-interface MarginsProps {
-  size?: Size
-}
-
-export const Margins: FC<React.PropsWithChildren<MarginsProps>> = ({
-  children,
-  size = "regular",
+export const Margins: FC<MarginsProps> = ({
+	size = "regular",
+	children,
+	...divProps
 }) => {
-  const styles = useStyles({ maxWidth: widthBySize[size] })
-  return <div className={styles.margins}>{children}</div>
-}
+	const maxWidth = widthBySize[size];
+	return (
+		<div
+			{...divProps}
+			css={{
+				marginLeft: "auto",
+				marginRight: "auto",
+				maxWidth: maxWidth,
+				paddingLeft: sidePadding,
+				paddingRight: sidePadding,
+				width: "100%",
+			}}
+		>
+			{children}
+		</div>
+	);
+};

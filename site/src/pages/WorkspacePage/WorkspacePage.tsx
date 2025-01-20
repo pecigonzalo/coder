@@ -1,70 +1,132 @@
-import { makeStyles } from "@material-ui/core/styles"
-import { useMachine } from "@xstate/react"
-import { AlertBanner } from "components/AlertBanner/AlertBanner"
-import { ChooseOne, Cond } from "components/Conditionals/ChooseOne"
-import { FC, useEffect } from "react"
-import { useParams } from "react-router-dom"
-import { FullScreenLoader } from "components/Loader/FullScreenLoader"
-import { firstOrItem } from "util/array"
-import { workspaceMachine } from "xServices/workspace/workspaceXService"
-import { WorkspaceReadyPage } from "./WorkspaceReadyPage"
+import { watchWorkspace } from "api/api";
+import { checkAuthorization } from "api/queries/authCheck";
+import { template as templateQueryOptions } from "api/queries/templates";
+import { workspaceBuildsKey } from "api/queries/workspaceBuilds";
+import { workspaceByOwnerAndName } from "api/queries/workspaces";
+import type { Workspace } from "api/typesGenerated";
+import { ErrorAlert } from "components/Alert/ErrorAlert";
+import { Loader } from "components/Loader/Loader";
+import { Margins } from "components/Margins/Margins";
+import { useEffectEvent } from "hooks/hookPolyfills";
+import { AnnouncementBanners } from "modules/dashboard/AnnouncementBanners/AnnouncementBanners";
+import { Navbar } from "modules/dashboard/Navbar/Navbar";
+import { type FC, useEffect } from "react";
+import { useQuery, useQueryClient } from "react-query";
+import { useParams } from "react-router-dom";
+import { WorkspaceReadyPage } from "./WorkspaceReadyPage";
+import { type WorkspacePermissions, workspaceChecks } from "./permissions";
 
 export const WorkspacePage: FC = () => {
-  const { username: usernameQueryParam, workspace: workspaceQueryParam } =
-    useParams()
-  const username = firstOrItem(usernameQueryParam, null)
-  const workspaceName = firstOrItem(workspaceQueryParam, null)
-  const [workspaceState, workspaceSend] = useMachine(workspaceMachine)
-  const {
-    workspace,
-    getWorkspaceError,
-    getTemplateWarning,
-    checkPermissionsError,
-  } = workspaceState.context
-  const styles = useStyles()
+	const queryClient = useQueryClient();
+	const params = useParams() as {
+		username: string;
+		workspace: string;
+	};
+	const workspaceName = params.workspace;
+	const username = params.username.replace("@", "");
 
-  /**
-   * Get workspace, template, and organization on mount and whenever workspaceId changes.
-   * workspaceSend should not change.
-   */
-  useEffect(() => {
-    username &&
-      workspaceName &&
-      workspaceSend({ type: "GET_WORKSPACE", username, workspaceName })
-  }, [username, workspaceName, workspaceSend])
+	// Workspace
+	const workspaceQueryOptions = workspaceByOwnerAndName(
+		username,
+		workspaceName,
+	);
+	const workspaceQuery = useQuery(workspaceQueryOptions);
+	const workspace = workspaceQuery.data;
 
-  return (
-    <ChooseOne>
-      <Cond condition={workspaceState.matches("error")}>
-        <div className={styles.error}>
-          {Boolean(getWorkspaceError) && (
-            <AlertBanner severity="error" error={getWorkspaceError} />
-          )}
-          {Boolean(getTemplateWarning) && (
-            <AlertBanner severity="error" error={getTemplateWarning} />
-          )}
-          {Boolean(checkPermissionsError) && (
-            <AlertBanner severity="error" error={checkPermissionsError} />
-          )}
-        </div>
-      </Cond>
-      <Cond condition={Boolean(workspace) && workspaceState.matches("ready")}>
-        <WorkspaceReadyPage
-          workspaceState={workspaceState}
-          workspaceSend={workspaceSend}
-        />
-      </Cond>
-      <Cond>
-        <FullScreenLoader />
-      </Cond>
-    </ChooseOne>
-  )
-}
+	// Template
+	const templateQuery = useQuery(
+		workspace
+			? templateQueryOptions(workspace.template_id)
+			: { enabled: false },
+	);
+	const template = templateQuery.data;
 
-const useStyles = makeStyles((theme) => ({
-  error: {
-    margin: theme.spacing(2),
-  },
-}))
+	// Permissions
+	const checks =
+		workspace && template ? workspaceChecks(workspace, template) : {};
+	const permissionsQuery = useQuery({
+		...checkAuthorization({ checks }),
+		enabled: workspace !== undefined && template !== undefined,
+	});
+	const permissions = permissionsQuery.data as WorkspacePermissions | undefined;
 
-export default WorkspacePage
+	// Watch workspace changes
+	const updateWorkspaceData = useEffectEvent(
+		async (newWorkspaceData: Workspace) => {
+			if (!workspace) {
+				throw new Error(
+					"Applying an update for a workspace that is undefined.",
+				);
+			}
+
+			queryClient.setQueryData(
+				workspaceQueryOptions.queryKey,
+				newWorkspaceData,
+			);
+
+			const hasNewBuild =
+				newWorkspaceData.latest_build.id !== workspace.latest_build.id;
+			const lastBuildHasChanged =
+				newWorkspaceData.latest_build.status !== workspace.latest_build.status;
+
+			if (hasNewBuild || lastBuildHasChanged) {
+				await queryClient.invalidateQueries(
+					workspaceBuildsKey(newWorkspaceData.id),
+				);
+			}
+		},
+	);
+	const workspaceId = workspace?.id;
+	useEffect(() => {
+		if (!workspaceId) {
+			return;
+		}
+
+		const eventSource = watchWorkspace(workspaceId);
+
+		eventSource.addEventListener("data", async (event) => {
+			const newWorkspaceData = JSON.parse(event.data) as Workspace;
+			await updateWorkspaceData(newWorkspaceData);
+		});
+
+		eventSource.addEventListener("error", (event) => {
+			console.error("Error on getting workspace changes.", event);
+		});
+
+		return () => {
+			eventSource.close();
+		};
+	}, [updateWorkspaceData, workspaceId]);
+
+	// Page statuses
+	const pageError =
+		workspaceQuery.error ?? templateQuery.error ?? permissionsQuery.error;
+	const isLoading = !workspace || !template || !permissions;
+
+	return (
+		<>
+			<AnnouncementBanners />
+			<div css={{ height: "100%", display: "flex", flexDirection: "column" }}>
+				<Navbar />
+				{pageError ? (
+					<Margins>
+						<ErrorAlert
+							error={pageError}
+							css={{ marginTop: 16, marginBottom: 16 }}
+						/>
+					</Margins>
+				) : isLoading ? (
+					<Loader />
+				) : (
+					<WorkspaceReadyPage
+						workspace={workspace}
+						template={template}
+						permissions={permissions}
+					/>
+				)}
+			</div>
+		</>
+	);
+};
+
+export default WorkspacePage;

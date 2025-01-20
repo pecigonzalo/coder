@@ -3,15 +3,14 @@ package httpmw
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 type templateVersionParamContextKey struct{}
@@ -30,12 +29,12 @@ func ExtractTemplateVersionParam(db database.Store) func(http.Handler) http.Hand
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-			templateVersionID, parsed := parseUUID(rw, r, "templateversion")
+			templateVersionID, parsed := ParseUUIDParam(rw, r, "templateversion")
 			if !parsed {
 				return
 			}
 			templateVersion, err := db.GetTemplateVersionByID(ctx, templateVersionID)
-			if errors.Is(err, sql.ErrNoRows) {
+			if httpapi.Is404Error(err) {
 				httpapi.ResourceNotFound(rw)
 				return
 			}

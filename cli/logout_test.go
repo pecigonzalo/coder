@@ -1,19 +1,17 @@
 package cli_test
 
 import (
-	"fmt"
 	"os"
-	"regexp"
 	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/cli/clitest"
-	"github.com/coder/coder/cli/config"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/pty/ptytest"
+	"github.com/coder/coder/v2/cli/clitest"
+	"github.com/coder/coder/v2/cli/config"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/pty/ptytest"
 )
 
 func TestLogout(t *testing.T) {
@@ -30,12 +28,12 @@ func TestLogout(t *testing.T) {
 
 		logoutChan := make(chan struct{})
 		logout, _ := clitest.New(t, "logout", "--global-config", string(config))
-		logout.SetIn(pty.Input())
-		logout.SetOut(pty.Output())
+		logout.Stdin = pty.Input()
+		logout.Stdout = pty.Output()
 
 		go func() {
 			defer close(logoutChan)
-			err := logout.Execute()
+			err := logout.Run()
 			assert.NoError(t, err)
 			assert.NoFileExists(t, string(config.URL()))
 			assert.NoFileExists(t, string(config.Session()))
@@ -58,12 +56,12 @@ func TestLogout(t *testing.T) {
 
 		logoutChan := make(chan struct{})
 		logout, _ := clitest.New(t, "logout", "--global-config", string(config), "-y")
-		logout.SetIn(pty.Input())
-		logout.SetOut(pty.Output())
+		logout.Stdin = pty.Input()
+		logout.Stdout = pty.Output()
 
 		go func() {
 			defer close(logoutChan)
-			err := logout.Execute()
+			err := logout.Run()
 			assert.NoError(t, err)
 			assert.NoFileExists(t, string(config.URL()))
 			assert.NoFileExists(t, string(config.Session()))
@@ -88,40 +86,13 @@ func TestLogout(t *testing.T) {
 		logoutChan := make(chan struct{})
 		logout, _ := clitest.New(t, "logout", "--global-config", string(config))
 
-		logout.SetIn(pty.Input())
-		logout.SetOut(pty.Output())
+		logout.Stdin = pty.Input()
+		logout.Stdout = pty.Output()
 
 		go func() {
 			defer close(logoutChan)
-			err := logout.Execute()
-			assert.EqualError(t, err, "You are not logged in. Try logging in using 'coder login <url>'.")
-		}()
-
-		<-logoutChan
-	})
-	t.Run("NoSessionFile", func(t *testing.T) {
-		t.Parallel()
-
-		pty := ptytest.New(t)
-		config := login(t, pty)
-
-		// Ensure session files exist.
-		require.FileExists(t, string(config.URL()))
-		require.FileExists(t, string(config.Session()))
-
-		err := os.Remove(string(config.Session()))
-		require.NoError(t, err)
-
-		logoutChan := make(chan struct{})
-		logout, _ := clitest.New(t, "logout", "--global-config", string(config))
-
-		logout.SetIn(pty.Input())
-		logout.SetOut(pty.Output())
-
-		go func() {
-			defer close(logoutChan)
-			err = logout.Execute()
-			assert.EqualError(t, err, "You are not logged in. Try logging in using 'coder login <url>'.")
+			err := logout.Run()
+			assert.ErrorContains(t, err, "You are not logged in. Try logging in using 'coder login <url>'.")
 		}()
 
 		<-logoutChan
@@ -149,7 +120,7 @@ func TestLogout(t *testing.T) {
 			require.NoError(t, err)
 		} else {
 			// Changing the permissions to throw error during deletion.
-			err = os.Chmod(string(config), 0500)
+			err = os.Chmod(string(config), 0o500)
 			require.NoError(t, err)
 		}
 		defer func() {
@@ -166,29 +137,27 @@ func TestLogout(t *testing.T) {
 			}
 		}()
 
-		logoutChan := make(chan struct{})
 		logout, _ := clitest.New(t, "logout", "--global-config", string(config))
 
-		logout.SetIn(pty.Input())
-		logout.SetOut(pty.Output())
+		logout.Stdin = pty.Input()
+		logout.Stdout = pty.Output()
 
 		go func() {
-			defer close(logoutChan)
-			err := logout.Execute()
-			assert.NotNil(t, err)
-			var errorMessage string
-			if runtime.GOOS == "windows" {
-				errorMessage = "The process cannot access the file because it is being used by another process."
-			} else {
-				errorMessage = "permission denied"
-			}
-			errRegex := regexp.MustCompile(fmt.Sprintf("Failed to log out.\n\tremove URL file: .+: %s\n\tremove session file: .+: %s", errorMessage, errorMessage))
-			assert.Regexp(t, errRegex, err.Error())
+			pty.ExpectMatch("Are you sure you want to log out?")
+			pty.WriteLine("yes")
 		}()
+		err = logout.Run()
+		require.Error(t, err)
 
-		pty.ExpectMatch("Are you sure you want to log out?")
-		pty.WriteLine("yes")
-		<-logoutChan
+		t.Logf("err: %v", err)
+
+		var wantError string
+		if runtime.GOOS == "windows" {
+			wantError = "The process cannot access the file because it is being used by another process."
+		} else {
+			wantError = "permission denied"
+		}
+		require.ErrorContains(t, err, wantError)
 	})
 }
 
@@ -200,16 +169,16 @@ func login(t *testing.T, pty *ptytest.PTY) config.Root {
 
 	doneChan := make(chan struct{})
 	root, cfg := clitest.New(t, "login", "--force-tty", client.URL.String(), "--no-open")
-	root.SetIn(pty.Input())
-	root.SetOut(pty.Output())
+	root.Stdin = pty.Input()
+	root.Stdout = pty.Output()
 	go func() {
 		defer close(doneChan)
-		err := root.Execute()
+		err := root.Run()
 		assert.NoError(t, err)
 	}()
 
 	pty.ExpectMatch("Paste your token here:")
-	pty.WriteLine(client.SessionToken)
+	pty.WriteLine(client.SessionToken())
 	pty.ExpectMatch("Welcome to Coder")
 	<-doneChan
 

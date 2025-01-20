@@ -1,6 +1,7 @@
 package cliui_test
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"strings"
@@ -10,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/cli/cliui"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 type stringWrapper struct {
@@ -24,22 +26,24 @@ func (s stringWrapper) String() string {
 }
 
 type tableTest1 struct {
-	Name        string      `table:"name"`
-	NotIncluded string      // no table tag
-	Age         int         `table:"age"`
-	Roles       []string    `table:"roles"`
-	Sub1        tableTest2  `table:"sub_1,recursive"`
-	Sub2        *tableTest2 `table:"sub_2,recursive"`
-	Sub3        tableTest3  `table:"sub 3,recursive"`
-	Sub4        tableTest2  `table:"sub 4"` // not recursive
+	Name        string         `table:"name,default_sort"`
+	AltName     *stringWrapper `table:"alt_name"`
+	NotIncluded string         // no table tag
+	Age         int            `table:"age"`
+	Roles       []string       `table:"roles"`
+	Sub1        tableTest2     `table:"sub_1,recursive"`
+	Sub2        *tableTest2    `table:"sub_2,recursive"`
+	Sub3        tableTest3     `table:"sub 3,recursive"`
+	Sub4        tableTest2     `table:"sub 4"` // not recursive
 
 	// Types with special formatting.
-	Time    time.Time  `table:"time"`
-	TimePtr *time.Time `table:"time_ptr"`
+	Time     time.Time         `table:"time"`
+	TimePtr  *time.Time        `table:"time_ptr"`
+	NullTime codersdk.NullTime `table:"null_time"`
 }
 
 type tableTest2 struct {
-	Name        stringWrapper `table:"name"`
+	Name        stringWrapper `table:"name,default_sort"`
 	Age         int           `table:"age"`
 	NotIncluded string        `table:"-"`
 }
@@ -49,11 +53,47 @@ type tableTest3 struct {
 	Sub         tableTest2 `table:"inner,recursive"`
 }
 
+type tableTest4 struct {
+	Inline    tableTest2 `table:"ignored,recursive_inline"`
+	SortField string     `table:"sort_field"`
+}
+
 func Test_DisplayTable(t *testing.T) {
 	t.Parallel()
 
-	someTime := time.Date(2022, 8, 2, 15, 49, 10, 0, time.Local)
+	someTime := time.Date(2022, 8, 2, 15, 49, 10, 0, time.UTC)
+
+	// Not sorted by name or age to test sorting.
 	in := []tableTest1{
+		{
+			Name:    "bar",
+			AltName: &stringWrapper{str: "bar alt"},
+			Age:     20,
+			Roles:   []string{"a"},
+			Sub1: tableTest2{
+				Name: stringWrapper{str: "bar1"},
+				Age:  21,
+			},
+			Sub2: nil,
+			Sub3: tableTest3{
+				Sub: tableTest2{
+					Name: stringWrapper{str: "bar3"},
+					Age:  23,
+				},
+			},
+			Sub4: tableTest2{
+				Name: stringWrapper{str: "bar4"},
+				Age:  24,
+			},
+			Time:    someTime,
+			TimePtr: nil,
+			NullTime: codersdk.NullTime{
+				NullTime: sql.NullTime{
+					Time:  someTime,
+					Valid: true,
+				},
+			},
+		},
 		{
 			Name:  "foo",
 			Age:   10,
@@ -78,28 +118,6 @@ func Test_DisplayTable(t *testing.T) {
 			},
 			Time:    someTime,
 			TimePtr: &someTime,
-		},
-		{
-			Name:  "bar",
-			Age:   20,
-			Roles: []string{"a"},
-			Sub1: tableTest2{
-				Name: stringWrapper{str: "bar1"},
-				Age:  21,
-			},
-			Sub2: nil,
-			Sub3: tableTest3{
-				Sub: tableTest2{
-					Name: stringWrapper{str: "bar3"},
-					Age:  23,
-				},
-			},
-			Sub4: tableTest2{
-				Name: stringWrapper{str: "bar4"},
-				Age:  24,
-			},
-			Time:    someTime,
-			TimePtr: nil,
 		},
 		{
 			Name:  "baz",
@@ -131,10 +149,10 @@ func Test_DisplayTable(t *testing.T) {
 		t.Parallel()
 
 		expected := `
-NAME  AGE  ROLES    SUB 1 NAME  SUB 1 AGE  SUB 2 NAME  SUB 2 AGE  SUB 3 INNER NAME  SUB 3 INNER AGE  SUB 4       TIME                  TIME PTR
-foo    10  [a b c]  foo1               11  foo2        12         foo3                           13  {foo4 14 }  2022-08-02T15:49:10Z  2022-08-02T15:49:10Z
-bar    20  [a]      bar1               21  <nil>       <nil>      bar3                           23  {bar4 24 }  2022-08-02T15:49:10Z  <nil>
-baz    30  []       baz1               31  <nil>       <nil>      baz3                           33  {baz4 34 }  2022-08-02T15:49:10Z  <nil>
+NAME  ALT NAME  AGE  ROLES      SUB 1 NAME  SUB 1 AGE  SUB 2 NAME  SUB 2 AGE  SUB 3 INNER NAME  SUB 3 INNER AGE  SUB 4       TIME                  TIME PTR              NULL TIME
+bar   bar alt    20  [a]        bar1               21  <nil>       <nil>      bar3                           23  {bar4 24 }  2022-08-02T15:49:10Z  <nil>                 2022-08-02T15:49:10Z
+baz   <nil>      30  []         baz1               31  <nil>       <nil>      baz3                           33  {baz4 34 }  2022-08-02T15:49:10Z  <nil>                 <nil>
+foo   <nil>      10  [a, b, c]  foo1               11  foo2        12         foo3                           13  {foo4 14 }  2022-08-02T15:49:10Z  2022-08-02T15:49:10Z  <nil>
 		`
 
 		// Test with non-pointer values.
@@ -154,17 +172,17 @@ baz    30  []       baz1               31  <nil>       <nil>      baz3          
 		compareTables(t, expected, out)
 	})
 
-	t.Run("Sort", func(t *testing.T) {
+	t.Run("CustomSort", func(t *testing.T) {
 		t.Parallel()
 
 		expected := `
-NAME  AGE  ROLES    SUB 1 NAME  SUB 1 AGE  SUB 2 NAME  SUB 2 AGE  SUB 3 INNER NAME  SUB 3 INNER AGE  SUB 4       TIME                  TIME PTR
-bar    20  [a]      bar1               21  <nil>       <nil>      bar3                           23  {bar4 24 }  2022-08-02T15:49:10Z  <nil>
-baz    30  []       baz1               31  <nil>       <nil>      baz3                           33  {baz4 34 }  2022-08-02T15:49:10Z  <nil>
-foo    10  [a b c]  foo1               11  foo2        12         foo3                           13  {foo4 14 }  2022-08-02T15:49:10Z  2022-08-02T15:49:10Z
+NAME  ALT NAME  AGE  ROLES      SUB 1 NAME  SUB 1 AGE  SUB 2 NAME  SUB 2 AGE  SUB 3 INNER NAME  SUB 3 INNER AGE  SUB 4       TIME                  TIME PTR              NULL TIME
+foo   <nil>      10  [a, b, c]  foo1               11  foo2        12         foo3                           13  {foo4 14 }  2022-08-02T15:49:10Z  2022-08-02T15:49:10Z  <nil>
+bar   bar alt    20  [a]        bar1               21  <nil>       <nil>      bar3                           23  {bar4 24 }  2022-08-02T15:49:10Z  <nil>                 2022-08-02T15:49:10Z
+baz   <nil>      30  []         baz1               31  <nil>       <nil>      baz3                           33  {baz4 34 }  2022-08-02T15:49:10Z  <nil>                 <nil>
 		`
 
-		out, err := cliui.DisplayTable(in, "name", nil)
+		out, err := cliui.DisplayTable(in, "age", nil)
 		log.Println("rendered table:\n" + out)
 		require.NoError(t, err)
 		compareTables(t, expected, out)
@@ -175,13 +193,74 @@ foo    10  [a b c]  foo1               11  foo2        12         foo3          
 
 		expected := `
 NAME  SUB 1 NAME  SUB 3 INNER NAME  TIME
-foo   foo1        foo3              2022-08-02T15:49:10Z
 bar   bar1        bar3              2022-08-02T15:49:10Z
 baz   baz1        baz3              2022-08-02T15:49:10Z
+foo   foo1        foo3              2022-08-02T15:49:10Z
 		`
 
 		out, err := cliui.DisplayTable(in, "", []string{"name", "sub_1_name", "sub_3 inner name", "time"})
 		log.Println("rendered table:\n" + out)
+		require.NoError(t, err)
+		compareTables(t, expected, out)
+	})
+
+	t.Run("Inline", func(t *testing.T) {
+		t.Parallel()
+
+		expected := `
+NAME    AGE
+Alice   25
+		`
+
+		inlineIn := []tableTest4{
+			{
+				Inline: tableTest2{
+					Name: stringWrapper{
+						str: "Alice",
+					},
+					Age:         25,
+					NotIncluded: "IgnoreMe",
+				},
+			},
+		}
+		out, err := cliui.DisplayTable(inlineIn, "", []string{"name", "age"})
+		log.Println("rendered table:\n" + out)
+		require.NoError(t, err)
+		compareTables(t, expected, out)
+	})
+
+	// This test ensures we can display dynamically typed slices
+	t.Run("Interfaces", func(t *testing.T) {
+		t.Parallel()
+
+		in := []any{tableTest1{}}
+		out, err := cliui.DisplayTable(in, "", nil)
+		t.Log("rendered table:\n" + out)
+		require.NoError(t, err)
+		other := []tableTest1{{}}
+		expected, err := cliui.DisplayTable(other, "", nil)
+		require.NoError(t, err)
+		compareTables(t, expected, out)
+	})
+
+	t.Run("WithSeparator", func(t *testing.T) {
+		t.Parallel()
+		expected := `
+NAME  ALT NAME  AGE  ROLES      SUB 1 NAME  SUB 1 AGE  SUB 2 NAME  SUB 2 AGE  SUB 3 INNER NAME  SUB 3 INNER AGE  SUB 4       TIME                  TIME PTR              NULL TIME
+bar   bar alt    20  [a]        bar1               21  <nil>       <nil>      bar3                           23  {bar4 24 }  2022-08-02T15:49:10Z  <nil>                 2022-08-02T15:49:10Z
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+baz   <nil>      30  []         baz1               31  <nil>       <nil>      baz3                           33  {baz4 34 }  2022-08-02T15:49:10Z  <nil>                 <nil>
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+foo   <nil>      10  [a, b, c]  foo1               11  foo2        12         foo3                           13  {foo4 14 }  2022-08-02T15:49:10Z  2022-08-02T15:49:10Z  <nil>
+		`
+
+		var inlineIn []any
+		for _, v := range in {
+			inlineIn = append(inlineIn, v)
+			inlineIn = append(inlineIn, cliui.TableSeparator{})
+		}
+		out, err := cliui.DisplayTable(inlineIn, "", nil)
+		t.Log("rendered table:\n" + out)
 		require.NoError(t, err)
 		compareTables(t, expected, out)
 	})
@@ -220,14 +299,6 @@ baz   baz1        baz3              2022-08-02T15:49:10Z
 				t.Parallel()
 
 				var in []any
-				_, err := cliui.DisplayTable(in, "", nil)
-				require.Error(t, err)
-			})
-
-			t.Run("WithData", func(t *testing.T) {
-				t.Parallel()
-
-				in := []any{tableTest1{}}
 				_, err := cliui.DisplayTable(in, "", nil)
 				require.Error(t, err)
 			})
@@ -325,28 +396,6 @@ baz   baz1        baz3              2022-08-02T15:49:10Z
 			})
 		})
 	})
-}
-
-func Test_TableHeaders(t *testing.T) {
-	t.Parallel()
-	s := []tableTest1{}
-	expectedFields := []string{
-		"name",
-		"age",
-		"roles",
-		"sub_1_name",
-		"sub_1_age",
-		"sub_2_name",
-		"sub_2_age",
-		"sub_3_inner_name",
-		"sub_3_inner_age",
-		"sub_4",
-		"time",
-		"time_ptr",
-	}
-	headers, err := cliui.TableHeaders(s)
-	require.NoError(t, err)
-	require.EqualValues(t, expectedFields, headers)
 }
 
 // compareTables normalizes the incoming table lines

@@ -1,6 +1,6 @@
 {
-  "format_version": "1.1",
-  "terraform_version": "1.2.8",
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
   "planned_values": {
     "root_module": {
       "resources": [
@@ -14,12 +14,26 @@
           "values": {
             "arch": "amd64",
             "auth": "token",
+            "connection_timeout": 120,
             "dir": null,
             "env": null,
+            "login_before_ready": true,
+            "metadata": [],
+            "motd_file": null,
+            "order": null,
             "os": "linux",
-            "startup_script": null
+            "shutdown_script": null,
+            "shutdown_script_timeout": 300,
+            "startup_script": null,
+            "startup_script_behavior": null,
+            "startup_script_timeout": 300,
+            "troubleshooting_url": null
           },
-          "sensitive_values": {}
+          "sensitive_values": {
+            "display_apps": [],
+            "metadata": [],
+            "token": true
+          }
         }
       ],
       "child_modules": [
@@ -66,23 +80,39 @@
       "name": "main",
       "provider_name": "registry.terraform.io/coder/coder",
       "change": {
-        "actions": ["create"],
+        "actions": [
+          "create"
+        ],
         "before": null,
         "after": {
           "arch": "amd64",
           "auth": "token",
+          "connection_timeout": 120,
           "dir": null,
           "env": null,
+          "login_before_ready": true,
+          "metadata": [],
+          "motd_file": null,
+          "order": null,
           "os": "linux",
-          "startup_script": null
+          "shutdown_script": null,
+          "shutdown_script_timeout": 300,
+          "startup_script": null,
+          "startup_script_behavior": null,
+          "startup_script_timeout": 300,
+          "troubleshooting_url": null
         },
         "after_unknown": {
+          "display_apps": true,
           "id": true,
           "init_script": true,
+          "metadata": [],
           "token": true
         },
         "before_sensitive": false,
         "after_sensitive": {
+          "display_apps": [],
+          "metadata": [],
           "token": true
         }
       }
@@ -95,7 +125,9 @@
       "name": "script",
       "provider_name": "registry.terraform.io/hashicorp/null",
       "change": {
-        "actions": ["read"],
+        "actions": [
+          "read"
+        ],
         "before": null,
         "after": {
           "inputs": {}
@@ -125,7 +157,9 @@
       "name": "example",
       "provider_name": "registry.terraform.io/hashicorp/null",
       "change": {
-        "actions": ["create"],
+        "actions": [
+          "create"
+        ],
         "before": null,
         "after": {
           "triggers": null
@@ -143,7 +177,7 @@
       "coder": {
         "name": "coder",
         "full_name": "registry.terraform.io/coder/coder",
-        "version_constraint": "0.5.0"
+        "version_constraint": "0.22.0"
       },
       "module.module:null": {
         "name": "null",
@@ -175,7 +209,10 @@
           "source": "./module",
           "expressions": {
             "script": {
-              "references": ["coder_agent.main.init_script", "coder_agent.main"]
+              "references": [
+                "coder_agent.main.init_script",
+                "coder_agent.main"
+              ]
             }
           },
           "module": {
@@ -187,7 +224,9 @@
                 "name": "example",
                 "provider_config_key": "module.module:null",
                 "schema_version": 0,
-                "depends_on": ["data.null_data_source.script"]
+                "depends_on": [
+                  "data.null_data_source.script"
+                ]
               },
               {
                 "address": "data.null_data_source.script",
@@ -197,7 +236,9 @@
                 "provider_config_key": "module.module:null",
                 "expressions": {
                   "inputs": {
-                    "references": ["var.script"]
+                    "references": [
+                      "var.script"
+                    ]
                   }
                 },
                 "schema_version": 0
@@ -214,7 +255,13 @@
   "relevant_attributes": [
     {
       "resource": "coder_agent.main",
-      "attribute": ["init_script"]
+      "attribute": [
+        "init_script"
+      ]
     }
-  ]
+  ],
+  "timestamp": "2024-10-28T20:07:49Z",
+  "applyable": true,
+  "complete": true,
+  "errored": false
 }

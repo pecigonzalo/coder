@@ -8,7 +8,7 @@ services:
       - "7080:7080"
     environment:
       CODER_PG_CONNECTION_URL: "postgresql://${POSTGRES_USER:-username}:${POSTGRES_PASSWORD:-password}@database/${POSTGRES_DB:-coder}?sslmode=disable"
-      CODER_ADDRESS: "0.0.0.0:7080"
+      CODER_HTTP_ADDRESS: "0.0.0.0:7080"
       # You'll need to set CODER_ACCESS_URL to an IP or domain
       # that workspaces can reach. This cannot be localhost
       # or 127.0.0.1 for non-Docker templates!
@@ -21,11 +21,17 @@ services:
     #  - "998" # docker group on host
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Run "docker volume rm coder_coder_home" to reset the dev tunnel url (https://abc.xyz.try.coder.app).
+      # This volume is not required in a production environment - you may safely remove it.
+      # Coder can recreate all the files it needs on restart.
+      - coder_home:/home/coder
     depends_on:
       database:
         condition: service_healthy
   database:
-    image: "postgres:14.2"
+    # Minimum supported version is 13.
+    # More versions here: https://hub.docker.com/_/postgres
+    image: "postgres:16"
     ports:
       - "5432:5432"
     environment:
@@ -45,3 +51,4 @@ services:
       retries: 5
 volumes:
   coder_data:
+  coder_home:

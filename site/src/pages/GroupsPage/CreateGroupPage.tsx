@@ -1,43 +1,30 @@
-import { useMachine } from "@xstate/react"
-import { useOrganizationId } from "hooks/useOrganizationId"
-import React from "react"
-import { Helmet } from "react-helmet-async"
-import { useNavigate } from "react-router-dom"
-import { pageTitle } from "util/page"
-import { createGroupMachine } from "xServices/groups/createGroupXService"
-import CreateGroupPageView from "./CreateGroupPageView"
+import { createGroup } from "api/queries/groups";
+import type { FC } from "react";
+import { Helmet } from "react-helmet-async";
+import { useMutation, useQueryClient } from "react-query";
+import { useNavigate } from "react-router-dom";
+import { pageTitle } from "utils/page";
+import CreateGroupPageView from "./CreateGroupPageView";
 
-export const CreateGroupPage: React.FC = () => {
-  const navigate = useNavigate()
-  const organizationId = useOrganizationId()
-  const [createState, sendCreateEvent] = useMachine(createGroupMachine, {
-    context: {
-      organizationId,
-    },
-    actions: {
-      onCreate: (_, { data }) => {
-        navigate(`/groups/${data.id}`)
-      },
-    },
-  })
-  const { createGroupFormErrors } = createState.context
+export const CreateGroupPage: FC = () => {
+	const queryClient = useQueryClient();
+	const navigate = useNavigate();
+	const createGroupMutation = useMutation(createGroup(queryClient, "default"));
 
-  return (
-    <>
-      <Helmet>
-        <title>{pageTitle("Create Group")}</title>
-      </Helmet>
-      <CreateGroupPageView
-        onSubmit={(data) => {
-          sendCreateEvent({
-            type: "CREATE",
-            data,
-          })
-        }}
-        formErrors={createGroupFormErrors}
-        isLoading={createState.matches("creatingGroup")}
-      />
-    </>
-  )
-}
-export default CreateGroupPage
+	return (
+		<>
+			<Helmet>
+				<title>{pageTitle("Create Group")}</title>
+			</Helmet>
+			<CreateGroupPageView
+				onSubmit={async (data) => {
+					const newGroup = await createGroupMutation.mutateAsync(data);
+					navigate(`/deployment/groups/${newGroup.name}`);
+				}}
+				error={createGroupMutation.error}
+				isLoading={createGroupMutation.isLoading}
+			/>
+		</>
+	);
+};
+export default CreateGroupPage;

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/tracing"
+	"github.com/coder/coder/v2/coderd/tracing"
 )
 
 func TestStatusWriter(t *testing.T) {
@@ -108,9 +108,7 @@ func TestStatusWriter(t *testing.T) {
 
 	t.Run("Hijack", func(t *testing.T) {
 		t.Parallel()
-		var (
-			rec = httptest.NewRecorder()
-		)
+		rec := httptest.NewRecorder()
 
 		w := &tracing.StatusWriter{ResponseWriter: hijacker{rec}}
 

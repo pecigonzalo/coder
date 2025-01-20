@@ -1,122 +1,299 @@
-import { ComponentMeta, Story } from "@storybook/react"
-import dayjs from "dayjs"
-import { spawn } from "xstate"
+import type { Meta, StoryObj } from "@storybook/react";
+import { expect, within } from "@storybook/test";
 import {
-  ProvisionerJobStatus,
-  WorkspaceTransition,
-} from "../../api/typesGenerated"
-import { MockWorkspace } from "../../testHelpers/entities"
-import { workspaceFilterQuery } from "../../util/filters"
+	type Workspace,
+	type WorkspaceStatus,
+	WorkspaceStatuses,
+} from "api/typesGenerated";
 import {
-  workspaceItemMachine,
-  WorkspaceItemMachineRef,
-} from "../../xServices/workspaces/workspacesXService"
+	MockMenu,
+	getDefaultFilterProps,
+} from "components/Filter/storyHelpers";
+import { DEFAULT_RECORDS_PER_PAGE } from "components/PaginationWidget/utils";
+import dayjs from "dayjs";
+import uniqueId from "lodash/uniqueId";
+import type { ComponentProps } from "react";
 import {
-  WorkspacesPageView,
-  WorkspacesPageViewProps,
-} from "./WorkspacesPageView"
+	MockBuildInfo,
+	MockOrganization,
+	MockPendingProvisionerJob,
+	MockTemplate,
+	MockUser,
+	MockWorkspace,
+	mockApiError,
+} from "testHelpers/entities";
+import { withDashboardProvider } from "testHelpers/storybook";
+import { WorkspacesPageView } from "./WorkspacesPageView";
 
-const createWorkspaceItemRef = (
-  status: ProvisionerJobStatus,
-  transition: WorkspaceTransition = "start",
-  outdated = false,
-  lastUsedAt = "0001-01-01",
-): WorkspaceItemMachineRef => {
-  return spawn(
-    workspaceItemMachine.withContext({
-      data: {
-        ...MockWorkspace,
-        outdated,
-        latest_build: {
-          ...MockWorkspace.latest_build,
-          transition,
-          job: {
-            ...MockWorkspace.latest_build.job,
-            status: status,
-          },
-        },
-        last_used_at: lastUsedAt,
-      },
-    }),
-  )
-}
+const createWorkspace = (
+	status: WorkspaceStatus,
+	outdated = false,
+	lastUsedAt = "0001-01-01",
+	dormantAt?: string,
+	deletingAt?: string,
+): Workspace => {
+	return {
+		...MockWorkspace,
+		id: uniqueId("workspace"),
+		outdated,
+		latest_build: {
+			...MockWorkspace.latest_build,
+			status,
+			job:
+				status === "pending"
+					? MockPendingProvisionerJob
+					: MockWorkspace.latest_build.job,
+		},
+		last_used_at: lastUsedAt,
+		dormant_at: dormantAt || null,
+		deleting_at: deletingAt || null,
+	};
+};
 
 // This is type restricted to prevent future statuses from slipping
 // through the cracks unchecked!
-const workspaces: { [key in ProvisionerJobStatus]: WorkspaceItemMachineRef } = {
-  canceled: createWorkspaceItemRef("canceled"),
-  canceling: createWorkspaceItemRef("canceling"),
-  failed: createWorkspaceItemRef("failed"),
-  pending: createWorkspaceItemRef("pending"),
-  running: createWorkspaceItemRef("running"),
-  succeeded: createWorkspaceItemRef("succeeded"),
-}
+const workspaces = WorkspaceStatuses.map((status) => createWorkspace(status));
 
-const additionalWorkspaces: Record<string, WorkspaceItemMachineRef> = {
-  runningAndStop: createWorkspaceItemRef("running", "stop"),
-  succeededAndStop: createWorkspaceItemRef("succeeded", "stop"),
-  runningAndDelete: createWorkspaceItemRef("running", "delete"),
-  outdated: createWorkspaceItemRef("running", "delete", true),
-  active: createWorkspaceItemRef(
-    "running",
-    undefined,
-    true,
-    dayjs().toString(),
-  ),
-  today: createWorkspaceItemRef(
-    "running",
-    undefined,
-    true,
-    dayjs().subtract(3, "hour").toString(),
-  ),
-  old: createWorkspaceItemRef(
-    "running",
-    undefined,
-    true,
-    dayjs().subtract(1, "week").toString(),
-  ),
-  veryOld: createWorkspaceItemRef(
-    "running",
-    undefined,
-    true,
-    dayjs().subtract(1, "month").subtract(4, "day").toString(),
-  ),
-}
+// Additional Workspaces depending on time
+const additionalWorkspaces: Record<string, Workspace> = {
+	today: createWorkspace(
+		"running",
+		true,
+		dayjs().subtract(3, "hour").toString(),
+	),
+	old: createWorkspace("running", true, dayjs().subtract(1, "week").toString()),
+	veryOld: createWorkspace(
+		"running",
+		true,
+		dayjs().subtract(1, "month").subtract(4, "day").toString(),
+	),
+};
 
-export default {
-  title: "pages/WorkspacesPageView",
-  component: WorkspacesPageView,
-  argTypes: {
-    workspaceRefs: {
-      options: [
-        ...Object.keys(workspaces),
-        ...Object.keys(additionalWorkspaces),
-      ],
-      mapping: { ...workspaces, ...additionalWorkspaces },
-    },
-  },
-} as ComponentMeta<typeof WorkspacesPageView>
+const dormantWorkspaces: Record<string, Workspace> = {
+	dormantNoDelete: createWorkspace(
+		"stopped",
+		false,
+		dayjs().subtract(1, "month").toString(),
+		dayjs().subtract(1, "month").toString(),
+	),
+	dormantAutoDelete: createWorkspace(
+		"stopped",
+		false,
+		dayjs().subtract(1, "month").toString(),
+		dayjs().subtract(1, "month").toString(),
+		dayjs().add(29, "day").toString(),
+	),
+};
 
-const Template: Story<WorkspacesPageViewProps> = (args) => (
-  <WorkspacesPageView {...args} />
-)
+const allWorkspaces = [
+	...Object.values(workspaces),
+	...Object.values(additionalWorkspaces),
+];
 
-export const AllStates = Template.bind({})
-AllStates.args = {
-  workspaceRefs: [
-    ...Object.values(workspaces),
-    ...Object.values(additionalWorkspaces),
-  ],
-}
+type FilterProps = ComponentProps<typeof WorkspacesPageView>["filterProps"];
 
-export const OwnerHasNoWorkspaces = Template.bind({})
-OwnerHasNoWorkspaces.args = {
-  workspaceRefs: [],
-  filter: workspaceFilterQuery.me,
-}
+const defaultFilterProps = getDefaultFilterProps<FilterProps>({
+	query: "owner:me",
+	menus: {
+		user: MockMenu,
+		template: MockMenu,
+		status: MockMenu,
+		organizations: MockMenu,
+	},
+	values: {
+		owner: MockUser.username,
+		template: undefined,
+		status: undefined,
+	},
+});
 
-export const NoResults = Template.bind({})
-NoResults.args = {
-  workspaceRefs: [],
-  filter: "searchtearmwithnoresults",
-}
+const mockTemplates = [
+	MockTemplate,
+	...[1, 2, 3, 4].map((num) => {
+		return {
+			...MockTemplate,
+			active_user_count: Math.floor(Math.random() * 10) * num,
+			display_name: `Extra Template ${num}`,
+			description: "Auto-Generated template",
+			icon: num % 2 === 0 ? "" : "/icon/goland.svg",
+		};
+	}),
+];
+
+const meta: Meta<typeof WorkspacesPageView> = {
+	title: "pages/WorkspacesPage",
+	component: WorkspacesPageView,
+	args: {
+		limit: DEFAULT_RECORDS_PER_PAGE,
+		filterProps: defaultFilterProps,
+		checkedWorkspaces: [],
+		canCheckWorkspaces: true,
+		templates: mockTemplates,
+		templatesFetchStatus: "success",
+		count: 13,
+		page: 1,
+	},
+	parameters: {
+		queries: [
+			{
+				key: ["buildInfo"],
+				data: MockBuildInfo,
+			},
+		],
+	},
+	decorators: [withDashboardProvider],
+};
+
+export default meta;
+type Story = StoryObj<typeof WorkspacesPageView>;
+
+export const AllStates: Story = {
+	args: {
+		workspaces: allWorkspaces,
+		count: allWorkspaces.length,
+	},
+};
+
+export const AllStatesWithFavorites: Story = {
+	args: {
+		workspaces: allWorkspaces.map((workspace, i) => ({
+			...workspace,
+			// NOTE: testing sort order is not relevant here.
+			favorite: i % 2 === 0,
+		})),
+		count: allWorkspaces.length,
+	},
+};
+
+const icons = [
+	"/icon/code.svg",
+	"/icon/aws.svg",
+	"/icon/docker-white.svg",
+	"/icon/docker.svg",
+	"",
+	"/icon/doesntexist.svg",
+];
+
+export const Icons: Story = {
+	args: {
+		workspaces: allWorkspaces.map((workspace, i) => ({
+			...workspace,
+			template_icon: icons[i % icons.length],
+		})),
+		count: allWorkspaces.length,
+	},
+};
+
+export const OwnerHasNoWorkspaces: Story = {
+	args: {
+		workspaces: [],
+		count: 0,
+		canCreateTemplate: true,
+	},
+};
+
+export const OwnerHasNoWorkspacesAndNoTemplates: Story = {
+	args: {
+		workspaces: [],
+		templates: [],
+		count: 0,
+		canCreateTemplate: true,
+	},
+};
+
+export const UserHasNoWorkspaces: Story = {
+	args: {
+		workspaces: [],
+		count: 0,
+		canCreateTemplate: false,
+	},
+};
+
+export const UserHasNoWorkspacesAndNoTemplates: Story = {
+	args: {
+		workspaces: [],
+		templates: [],
+		count: 0,
+		canCreateTemplate: false,
+	},
+};
+
+export const NoSearchResults: Story = {
+	args: {
+		workspaces: [],
+		filterProps: {
+			...defaultFilterProps,
+			filter: {
+				...defaultFilterProps.filter,
+				query: "searchwithnoresults",
+				used: true,
+			},
+		},
+		count: 0,
+	},
+};
+
+export const UnhealthyWorkspace: Story = {
+	args: {
+		workspaces: [
+			{
+				...createWorkspace("running"),
+				health: {
+					healthy: false,
+					failing_agents: [],
+				},
+			},
+		],
+	},
+};
+
+export const DormantWorkspaces: Story = {
+	args: {
+		workspaces: Object.values(dormantWorkspaces),
+		count: Object.values(dormantWorkspaces).length,
+	},
+};
+
+export const WithError: Story = {
+	args: {
+		error: mockApiError({ message: "Something went wrong" }),
+	},
+};
+
+export const InvalidPageNumber: Story = {
+	args: {
+		workspaces: [],
+		count: 200,
+		limit: 25,
+		page: 1000,
+	},
+};
+
+export const ShowOrganizations: Story = {
+	args: {
+		workspaces: [{ ...MockWorkspace, organization_name: "limbus-co" }],
+	},
+
+	parameters: {
+		showOrganizations: true,
+		organizations: [
+			{
+				...MockOrganization,
+				name: "limbus-co",
+				display_name: "Limbus Company, LLC",
+			},
+		],
+	},
+
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const accessibleTableCell = await canvas.findByRole("cell", {
+			// The organization label is always visually hidden, but the test
+			// makes sure that there's a screen reader hook to give the table
+			// cell more structured output
+			name: /organization: Limbus Company, LLC/i,
+		});
+
+		expect(accessibleTableCell).toBeDefined();
+	},
+};

@@ -1,6 +1,0 @@
-{
-  "errors": {
-    "getOrganizationError": "Something went wrong fetching organizations.",
-    "getTemplatesError": "Something went wrong fetching templates."
-  }
-}

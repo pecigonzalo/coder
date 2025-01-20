@@ -2,153 +2,249 @@ package cli
 
 import (
 	"fmt"
-	"strings"
+	"os"
 	"time"
 
-	"github.com/spf13/cobra"
+	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/serpent"
 )
 
-func tokens() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:     "tokens",
-		Short:   "Manage personal access tokens",
-		Long:    "Tokens are used to authenticate automated clients to Coder.",
-		Aliases: []string{"token"},
-		Example: formatExamples(
-			example{
+func (r *RootCmd) tokens() *serpent.Command {
+	cmd := &serpent.Command{
+		Use:   "tokens",
+		Short: "Manage personal access tokens",
+		Long: "Tokens are used to authenticate automated clients to Coder.\n" + FormatExamples(
+			Example{
 				Description: "Create a token for automation",
 				Command:     "coder tokens create",
 			},
-			example{
+			Example{
 				Description: "List your tokens",
 				Command:     "coder tokens ls",
 			},
-			example{
+			Example{
 				Description: "Remove a token by ID",
 				Command:     "coder tokens rm WuoWs4ZsMX",
 			},
 		),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmd.Help()
+		Aliases: []string{"token"},
+		Handler: func(inv *serpent.Invocation) error {
+			return inv.Command.HelpHandler(inv)
+		},
+		Children: []*serpent.Command{
+			r.createToken(),
+			r.listTokens(),
+			r.removeToken(),
 		},
 	}
-	cmd.AddCommand(
-		createToken(),
-		listTokens(),
-		removeToken(),
-	)
-
 	return cmd
 }
 
-func createToken() *cobra.Command {
-	cmd := &cobra.Command{
+func (r *RootCmd) createToken() *serpent.Command {
+	var (
+		tokenLifetime string
+		name          string
+		user          string
+	)
+	client := new(codersdk.Client)
+	cmd := &serpent.Command{
 		Use:   "create",
-		Short: "Create a tokens",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := CreateClient(cmd)
-			if err != nil {
-				return xerrors.Errorf("create codersdk client: %w", err)
+		Short: "Create a token",
+		Middleware: serpent.Chain(
+			serpent.RequireNArgs(0),
+			r.InitClient(client),
+		),
+		Handler: func(inv *serpent.Invocation) error {
+			userID := codersdk.Me
+			if user != "" {
+				userID = user
 			}
 
-			res, err := client.CreateToken(cmd.Context(), codersdk.Me)
+			var parsedLifetime time.Duration
+			var err error
+
+			tokenConfig, err := client.GetTokenConfig(inv.Context(), userID)
+			if err != nil {
+				return xerrors.Errorf("get token config: %w", err)
+			}
+
+			if tokenLifetime == "" {
+				parsedLifetime = tokenConfig.MaxTokenLifetime
+			} else {
+				parsedLifetime, err = extendedParseDuration(tokenLifetime)
+				if err != nil {
+					return xerrors.Errorf("parse lifetime: %w", err)
+				}
+
+				if parsedLifetime > tokenConfig.MaxTokenLifetime {
+					return xerrors.Errorf("lifetime (%s) is greater than the maximum allowed lifetime (%s)", parsedLifetime, tokenConfig.MaxTokenLifetime)
+				}
+			}
+
+			res, err := client.CreateToken(inv.Context(), userID, codersdk.CreateTokenRequest{
+				Lifetime:  parsedLifetime,
+				TokenName: name,
+			})
 			if err != nil {
 				return xerrors.Errorf("create tokens: %w", err)
 			}
 
-			cmd.Println(cliui.Styles.Wrap.Render(
-				"Here is your token. 🪄",
-			))
-			cmd.Println()
-			cmd.Println(cliui.Styles.Code.Render(strings.TrimSpace(res.Key)))
-			cmd.Println()
-			cmd.Println(cliui.Styles.Wrap.Render(
-				fmt.Sprintf("You can use this token by setting the --%s CLI flag, the %s environment variable, or the %q HTTP header.", varToken, envSessionToken, codersdk.SessionTokenKey),
-			))
+			_, _ = fmt.Fprintln(inv.Stdout, res.Key)
 
 			return nil
 		},
 	}
 
-	return cmd
-}
-
-type tokenRow struct {
-	ID        string    `table:"ID"`
-	LastUsed  time.Time `table:"Last Used"`
-	ExpiresAt time.Time `table:"Expires At"`
-	CreatedAt time.Time `table:"Created At"`
-}
-
-func listTokens() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:     "list",
-		Aliases: []string{"ls"},
-		Short:   "List tokens",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := CreateClient(cmd)
-			if err != nil {
-				return xerrors.Errorf("create codersdk client: %w", err)
-			}
-
-			keys, err := client.GetTokens(cmd.Context(), codersdk.Me)
-			if err != nil {
-				return xerrors.Errorf("create tokens: %w", err)
-			}
-
-			if len(keys) == 0 {
-				cmd.Println(cliui.Styles.Wrap.Render(
-					"No tokens found.",
-				))
-			}
-
-			var rows []tokenRow
-			for _, key := range keys {
-				rows = append(rows, tokenRow{
-					ID:        key.ID,
-					LastUsed:  key.LastUsed,
-					ExpiresAt: key.ExpiresAt,
-					CreatedAt: key.CreatedAt,
-				})
-			}
-
-			out, err := cliui.DisplayTable(rows, "", nil)
-			if err != nil {
-				return err
-			}
-
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), out)
-			return err
+	cmd.Options = serpent.OptionSet{
+		{
+			Flag:        "lifetime",
+			Env:         "CODER_TOKEN_LIFETIME",
+			Description: "Specify a duration for the lifetime of the token.",
+			Value:       serpent.StringOf(&tokenLifetime),
+		},
+		{
+			Flag:          "name",
+			FlagShorthand: "n",
+			Env:           "CODER_TOKEN_NAME",
+			Description:   "Specify a human-readable name.",
+			Value:         serpent.StringOf(&name),
+		},
+		{
+			Flag:          "user",
+			FlagShorthand: "u",
+			Env:           "CODER_TOKEN_USER",
+			Description:   "Specify the user to create the token for (Only works if logged in user is admin).",
+			Value:         serpent.StringOf(&user),
 		},
 	}
 
 	return cmd
 }
 
-func removeToken() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:     "remove [id]",
-		Aliases: []string{"rm"},
-		Short:   "Delete a token",
-		Args:    cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := CreateClient(cmd)
+// tokenListRow is the type provided to the OutputFormatter.
+type tokenListRow struct {
+	// For JSON format:
+	codersdk.APIKey `table:"-"`
+
+	// For table format:
+	ID        string    `json:"-" table:"id,default_sort"`
+	TokenName string    `json:"token_name" table:"name"`
+	LastUsed  time.Time `json:"-" table:"last used"`
+	ExpiresAt time.Time `json:"-" table:"expires at"`
+	CreatedAt time.Time `json:"-" table:"created at"`
+	Owner     string    `json:"-" table:"owner"`
+}
+
+func tokenListRowFromToken(token codersdk.APIKeyWithOwner) tokenListRow {
+	return tokenListRow{
+		APIKey:    token.APIKey,
+		ID:        token.ID,
+		TokenName: token.TokenName,
+		LastUsed:  token.LastUsed,
+		ExpiresAt: token.ExpiresAt,
+		CreatedAt: token.CreatedAt,
+		Owner:     token.Username,
+	}
+}
+
+func (r *RootCmd) listTokens() *serpent.Command {
+	// we only display the 'owner' column if the --all argument is passed in
+	defaultCols := []string{"id", "name", "last used", "expires at", "created at"}
+	if slices.Contains(os.Args, "-a") || slices.Contains(os.Args, "--all") {
+		defaultCols = append(defaultCols, "owner")
+	}
+
+	var (
+		all           bool
+		displayTokens []tokenListRow
+		formatter     = cliui.NewOutputFormatter(
+			cliui.TableFormat([]tokenListRow{}, defaultCols),
+			cliui.JSONFormat(),
+		)
+	)
+
+	client := new(codersdk.Client)
+	cmd := &serpent.Command{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List tokens",
+		Middleware: serpent.Chain(
+			serpent.RequireNArgs(0),
+			r.InitClient(client),
+		),
+		Handler: func(inv *serpent.Invocation) error {
+			tokens, err := client.Tokens(inv.Context(), codersdk.Me, codersdk.TokensFilter{
+				IncludeAll: all,
+			})
 			if err != nil {
-				return xerrors.Errorf("create codersdk client: %w", err)
+				return xerrors.Errorf("list tokens: %w", err)
 			}
 
-			err = client.DeleteAPIKey(cmd.Context(), codersdk.Me, args[0])
+			if len(tokens) == 0 {
+				cliui.Infof(
+					inv.Stdout,
+					"No tokens found.\n",
+				)
+			}
+
+			displayTokens = make([]tokenListRow, len(tokens))
+
+			for i, token := range tokens {
+				displayTokens[i] = tokenListRowFromToken(token)
+			}
+
+			out, err := formatter.Format(inv.Context(), displayTokens)
+			if err != nil {
+				return err
+			}
+
+			_, err = fmt.Fprintln(inv.Stdout, out)
+			return err
+		},
+	}
+
+	cmd.Options = serpent.OptionSet{
+		{
+			Flag:          "all",
+			FlagShorthand: "a",
+			Description:   "Specifies whether all users' tokens will be listed or not (must have Owner role to see all tokens).",
+			Value:         serpent.BoolOf(&all),
+		},
+	}
+
+	formatter.AttachOptions(&cmd.Options)
+	return cmd
+}
+
+func (r *RootCmd) removeToken() *serpent.Command {
+	client := new(codersdk.Client)
+	cmd := &serpent.Command{
+		Use:     "remove <name>",
+		Aliases: []string{"delete"},
+		Short:   "Delete a token",
+		Middleware: serpent.Chain(
+			serpent.RequireNArgs(1),
+			r.InitClient(client),
+		),
+		Handler: func(inv *serpent.Invocation) error {
+			token, err := client.APIKeyByName(inv.Context(), codersdk.Me, inv.Args[0])
+			if err != nil {
+				return xerrors.Errorf("fetch api key by name %s: %w", inv.Args[0], err)
+			}
+
+			err = client.DeleteAPIKey(inv.Context(), codersdk.Me, token.ID)
 			if err != nil {
 				return xerrors.Errorf("delete api key: %w", err)
 			}
 
-			cmd.Println(cliui.Styles.Wrap.Render(
+			cliui.Infof(
+				inv.Stdout,
 				"Token has been deleted.",
-			))
+			)
 
 			return nil
 		},

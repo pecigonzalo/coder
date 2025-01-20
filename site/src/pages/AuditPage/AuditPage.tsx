@@ -1,62 +1,98 @@
-import { useMachine } from "@xstate/react"
-import { FC } from "react"
-import { Helmet } from "react-helmet-async"
-import { useNavigate, useSearchParams } from "react-router-dom"
-import { useFilter } from "util/filters"
-import { pageTitle } from "util/page"
-import { auditMachine } from "xServices/audit/auditXService"
-import { AuditPageView } from "./AuditPageView"
+import { paginatedAudits } from "api/queries/audits";
+import { useFilter } from "components/Filter/Filter";
+import { useUserFilterMenu } from "components/Filter/UserFilter";
+import { isNonInitialPage } from "components/PaginationWidget/utils";
+import { usePaginatedQuery } from "hooks/usePaginatedQuery";
+import { useDashboard } from "modules/dashboard/useDashboard";
+import { useFeatureVisibility } from "modules/dashboard/useFeatureVisibility";
+import { useOrganizationsFilterMenu } from "modules/tableFiltering/options";
+import type { FC } from "react";
+import { Helmet } from "react-helmet-async";
+import { useSearchParams } from "react-router-dom";
+import { pageTitle } from "utils/page";
+import { useActionFilterMenu, useResourceTypeFilterMenu } from "./AuditFilter";
+import { AuditPageView } from "./AuditPageView";
 
 const AuditPage: FC = () => {
-  const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
-  const currentPage = searchParams.get("page")
-    ? Number(searchParams.get("page"))
-    : 1
-  const { filter, setFilter } = useFilter("")
-  const [auditState, auditSend] = useMachine(auditMachine, {
-    context: {
-      page: currentPage,
-      limit: 25,
-      filter,
-    },
-    actions: {
-      onPageChange: ({ page }) => {
-        navigate({
-          search: `?page=${page}`,
-        })
-      },
-    },
-  })
-  const { auditLogs, count, page, limit } = auditState.context
+	const feats = useFeatureVisibility();
+	const { showOrganizations } = useDashboard();
 
-  return (
-    <>
-      <Helmet>
-        <title>{pageTitle("Audit")}</title>
-      </Helmet>
-      <AuditPageView
-        filter={filter}
-        auditLogs={auditLogs}
-        count={count}
-        page={page}
-        limit={limit}
-        onNext={() => {
-          auditSend("NEXT")
-        }}
-        onPrevious={() => {
-          auditSend("PREVIOUS")
-        }}
-        onGoToPage={(page) => {
-          auditSend("GO_TO_PAGE", { page })
-        }}
-        onFilter={(filter) => {
-          setFilter(filter)
-          auditSend("FILTER", { filter })
-        }}
-      />
-    </>
-  )
-}
+	/**
+	 * There is an implicit link between auditsQuery and filter via the
+	 * searchParams object
+	 *
+	 * @todo Make link more explicit (probably by making it so that components
+	 * and hooks can share the result of useSearchParams directly)
+	 */
+	const [searchParams, setSearchParams] = useSearchParams();
+	const auditsQuery = usePaginatedQuery(paginatedAudits(searchParams));
+	const filter = useFilter({
+		searchParamsResult: [searchParams, setSearchParams],
+		onUpdate: auditsQuery.goToFirstPage,
+	});
 
-export default AuditPage
+	const userMenu = useUserFilterMenu({
+		value: filter.values.username,
+		onChange: (option) =>
+			filter.update({
+				...filter.values,
+				username: option?.value,
+			}),
+	});
+
+	const actionMenu = useActionFilterMenu({
+		value: filter.values.action,
+		onChange: (option) =>
+			filter.update({
+				...filter.values,
+				action: option?.value,
+			}),
+	});
+
+	const resourceTypeMenu = useResourceTypeFilterMenu({
+		value: filter.values.resource_type,
+		onChange: (option) =>
+			filter.update({
+				...filter.values,
+				resource_type: option?.value,
+			}),
+	});
+
+	const organizationsMenu = useOrganizationsFilterMenu({
+		value: filter.values.organization,
+		onChange: (option) =>
+			filter.update({
+				...filter.values,
+				organization: option?.value,
+			}),
+	});
+
+	return (
+		<>
+			<Helmet>
+				<title>{pageTitle("Audit")}</title>
+			</Helmet>
+
+			<AuditPageView
+				auditLogs={auditsQuery.data?.audit_logs}
+				isNonInitialPage={isNonInitialPage(searchParams)}
+				isAuditLogVisible={feats.audit_log}
+				auditsQuery={auditsQuery}
+				error={auditsQuery.error}
+				showOrgDetails={showOrganizations}
+				filterProps={{
+					filter,
+					error: auditsQuery.error,
+					menus: {
+						user: userMenu,
+						action: actionMenu,
+						resourceType: resourceTypeMenu,
+						organization: showOrganizations ? organizationsMenu : undefined,
+					},
+				}}
+			/>
+		</>
+	);
+};
+
+export default AuditPage;

@@ -1,29 +1,26 @@
 package echo_test
 
 import (
-	"archive/tar"
-	"bytes"
 	"context"
-	"io"
-	"os"
-	"path/filepath"
 	"testing"
 
-	"github.com/spf13/afero"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/provisionersdk"
-	"github.com/coder/coder/provisionersdk/proto"
+	"github.com/coder/coder/v2/codersdk/drpc"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/provisionersdk"
+	"github.com/coder/coder/v2/provisionersdk/proto"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestEcho(t *testing.T) {
 	t.Parallel()
 
-	fs := afero.NewMemMapFs()
+	workdir := t.TempDir()
+
 	// Create an in-memory provisioner to communicate with.
-	client, server := provisionersdk.TransportPipe()
+	client, server := drpc.MemTransportPipe()
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		_ = client.Close()
@@ -31,60 +28,226 @@ func TestEcho(t *testing.T) {
 		cancelFunc()
 	})
 	go func() {
-		err := echo.Serve(ctx, fs, &provisionersdk.ServeOptions{
-			Listener: server,
+		err := echo.Serve(ctx, &provisionersdk.ServeOptions{
+			Listener:      server,
+			WorkDirectory: workdir,
 		})
 		assert.NoError(t, err)
 	}()
-	api := proto.NewDRPCProvisionerClient(provisionersdk.Conn(client))
+	api := proto.NewDRPCProvisionerClient(client)
 
 	t.Run("Parse", func(t *testing.T) {
 		t.Parallel()
+		ctx, cancel := context.WithTimeout(ctx, testutil.WaitShort)
+		defer cancel()
 
-		responses := []*proto.Parse_Response{{
-			Type: &proto.Parse_Response_Log{
-				Log: &proto.Log{
-					Output: "log-output",
+		responses := []*proto.Response{
+			{
+				Type: &proto.Response_Log{
+					Log: &proto.Log{
+						Output: "log-output",
+					},
 				},
 			},
-		}, {
-			Type: &proto.Parse_Response_Complete{
-				Complete: &proto.Parse_Complete{
-					ParameterSchemas: []*proto.ParameterSchema{{
-						Name: "parameter-schema",
-					}},
+			{
+				Type: &proto.Response_Parse{
+					Parse: &proto.ParseComplete{},
 				},
 			},
-		}}
+		}
 		data, err := echo.Tar(&echo.Responses{
 			Parse: responses,
 		})
 		require.NoError(t, err)
-		client, err := api.Parse(ctx, &proto.Parse_Request{
-			Directory: unpackTar(t, fs, data),
-		})
+		client, err := api.Session(ctx)
+		require.NoError(t, err)
+		defer func() {
+			err := client.Close()
+			require.NoError(t, err)
+		}()
+		err = client.Send(&proto.Request{Type: &proto.Request_Config{Config: &proto.Config{
+			TemplateSourceArchive: data,
+		}}})
+		require.NoError(t, err)
+
+		err = client.Send(&proto.Request{Type: &proto.Request_Parse{Parse: &proto.ParseRequest{}}})
 		require.NoError(t, err)
 		log, err := client.Recv()
 		require.NoError(t, err)
 		require.Equal(t, responses[0].GetLog().Output, log.GetLog().Output)
 		complete, err := client.Recv()
 		require.NoError(t, err)
-		require.Equal(t, responses[1].GetComplete().ParameterSchemas[0].Name,
-			complete.GetComplete().ParameterSchemas[0].Name)
+		require.NotNil(t, complete)
 	})
 
 	t.Run("Provision", func(t *testing.T) {
 		t.Parallel()
+		ctx, cancel := context.WithTimeout(ctx, testutil.WaitShort)
+		defer cancel()
 
-		responses := []*proto.Provision_Response{{
-			Type: &proto.Provision_Response_Log{
+		planResponses := []*proto.Response{
+			{
+				Type: &proto.Response_Log{
+					Log: &proto.Log{
+						Level:  proto.LogLevel_INFO,
+						Output: "log-output",
+					},
+				},
+			},
+			{
+				Type: &proto.Response_Plan{
+					Plan: &proto.PlanComplete{
+						Resources: []*proto.Resource{{
+							Name: "resource",
+						}},
+					},
+				},
+			},
+		}
+		applyResponses := []*proto.Response{
+			{
+				Type: &proto.Response_Log{
+					Log: &proto.Log{
+						Level:  proto.LogLevel_INFO,
+						Output: "log-output",
+					},
+				},
+			},
+			{
+				Type: &proto.Response_Apply{
+					Apply: &proto.ApplyComplete{
+						Resources: []*proto.Resource{{
+							Name: "resource",
+						}},
+					},
+				},
+			},
+		}
+		data, err := echo.Tar(&echo.Responses{
+			ProvisionPlan:  planResponses,
+			ProvisionApply: applyResponses,
+		})
+		require.NoError(t, err)
+		client, err := api.Session(ctx)
+		require.NoError(t, err)
+		defer func() {
+			err := client.Close()
+			require.NoError(t, err)
+		}()
+		err = client.Send(&proto.Request{Type: &proto.Request_Config{Config: &proto.Config{
+			TemplateSourceArchive: data,
+		}}})
+		require.NoError(t, err)
+
+		err = client.Send(&proto.Request{Type: &proto.Request_Plan{Plan: &proto.PlanRequest{}}})
+		require.NoError(t, err)
+		log, err := client.Recv()
+		require.NoError(t, err)
+		require.Equal(t, planResponses[0].GetLog().Output, log.GetLog().Output)
+		complete, err := client.Recv()
+		require.NoError(t, err)
+		require.Equal(t, planResponses[1].GetPlan().Resources[0].Name,
+			complete.GetPlan().Resources[0].Name)
+
+		err = client.Send(&proto.Request{Type: &proto.Request_Apply{Apply: &proto.ApplyRequest{}}})
+		require.NoError(t, err)
+		log, err = client.Recv()
+		require.NoError(t, err)
+		require.Equal(t, applyResponses[0].GetLog().Output, log.GetLog().Output)
+		complete, err = client.Recv()
+		require.NoError(t, err)
+		require.Equal(t, applyResponses[1].GetApply().Resources[0].Name,
+			complete.GetApply().Resources[0].Name)
+	})
+
+	t.Run("ProvisionStop", func(t *testing.T) {
+		t.Parallel()
+
+		// Stop responses should be returned when the workspace is being stopped.
+		data, err := echo.Tar(&echo.Responses{
+			ProvisionApply: applyCompleteResource("DEFAULT"),
+			ProvisionPlan:  planCompleteResource("DEFAULT"),
+			ProvisionPlanMap: map[proto.WorkspaceTransition][]*proto.Response{
+				proto.WorkspaceTransition_STOP: planCompleteResource("STOP"),
+			},
+			ProvisionApplyMap: map[proto.WorkspaceTransition][]*proto.Response{
+				proto.WorkspaceTransition_STOP: applyCompleteResource("STOP"),
+			},
+		})
+		require.NoError(t, err)
+
+		client, err := api.Session(ctx)
+		require.NoError(t, err)
+		defer func() {
+			err := client.Close()
+			require.NoError(t, err)
+		}()
+		err = client.Send(&proto.Request{Type: &proto.Request_Config{Config: &proto.Config{
+			TemplateSourceArchive: data,
+		}}})
+		require.NoError(t, err)
+
+		// Do stop.
+		err = client.Send(&proto.Request{
+			Type: &proto.Request_Plan{
+				Plan: &proto.PlanRequest{
+					Metadata: &proto.Metadata{
+						WorkspaceTransition: proto.WorkspaceTransition_STOP,
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		complete, err := client.Recv()
+		require.NoError(t, err)
+		require.Equal(t,
+			"STOP",
+			complete.GetPlan().Resources[0].Name,
+		)
+
+		// Do start.
+		err = client.Send(&proto.Request{
+			Type: &proto.Request_Plan{
+				Plan: &proto.PlanRequest{
+					Metadata: &proto.Metadata{
+						WorkspaceTransition: proto.WorkspaceTransition_START,
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		complete, err = client.Recv()
+		require.NoError(t, err)
+		require.Equal(t,
+			"DEFAULT",
+			complete.GetPlan().Resources[0].Name,
+		)
+	})
+
+	t.Run("ProvisionWithLogLevel", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(ctx, testutil.WaitShort)
+		defer cancel()
+
+		responses := []*proto.Response{{
+			Type: &proto.Response_Log{
 				Log: &proto.Log{
-					Output: "log-output",
+					Level:  proto.LogLevel_TRACE,
+					Output: "log-output-trace",
 				},
 			},
 		}, {
-			Type: &proto.Provision_Response_Complete{
-				Complete: &proto.Provision_Complete{
+			Type: &proto.Response_Log{
+				Log: &proto.Log{
+					Level:  proto.LogLevel_INFO,
+					Output: "log-output-info",
+				},
+			},
+		}, {
+			Type: &proto.Response_Apply{
+				Apply: &proto.ApplyComplete{
 					Resources: []*proto.Resource{{
 						Name: "resource",
 					}},
@@ -92,45 +255,62 @@ func TestEcho(t *testing.T) {
 			},
 		}}
 		data, err := echo.Tar(&echo.Responses{
-			Provision: responses,
+			ProvisionPlan:  echo.PlanComplete,
+			ProvisionApply: responses,
 		})
 		require.NoError(t, err)
-		client, err := api.Provision(ctx)
+		client, err := api.Session(ctx)
 		require.NoError(t, err)
-		err = client.Send(&proto.Provision_Request{
-			Type: &proto.Provision_Request_Start{
-				Start: &proto.Provision_Start{
-					Directory: unpackTar(t, fs, data),
-				},
-			},
-		})
+		defer func() {
+			err := client.Close()
+			require.NoError(t, err)
+		}()
+		err = client.Send(&proto.Request{Type: &proto.Request_Config{Config: &proto.Config{
+			TemplateSourceArchive: data,
+			ProvisionerLogLevel:   "debug",
+		}}})
+		require.NoError(t, err)
+
+		// Plan is required before apply
+		err = client.Send(&proto.Request{Type: &proto.Request_Plan{Plan: &proto.PlanRequest{}}})
+		require.NoError(t, err)
+		complete, err := client.Recv()
+		require.NoError(t, err)
+		require.NotNil(t, complete.GetPlan())
+
+		err = client.Send(&proto.Request{Type: &proto.Request_Apply{Apply: &proto.ApplyRequest{}}})
 		require.NoError(t, err)
 		log, err := client.Recv()
 		require.NoError(t, err)
-		require.Equal(t, responses[0].GetLog().Output, log.GetLog().Output)
-		complete, err := client.Recv()
+		// Skip responses[0] as it's trace level
+		require.Equal(t, responses[1].GetLog().Output, log.GetLog().Output)
+		complete, err = client.Recv()
 		require.NoError(t, err)
-		require.Equal(t, responses[1].GetComplete().Resources[0].Name,
-			complete.GetComplete().Resources[0].Name)
+		require.Equal(t, responses[2].GetApply().Resources[0].Name,
+			complete.GetApply().Resources[0].Name)
 	})
 }
 
-func unpackTar(t *testing.T, fs afero.Fs, data []byte) string {
-	directory := t.TempDir()
-	reader := tar.NewReader(bytes.NewReader(data))
-	for {
-		header, err := reader.Next()
-		if err != nil {
-			break
-		}
-		// #nosec
-		path := filepath.Join(directory, header.Name)
-		file, err := fs.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
-		require.NoError(t, err)
-		_, err = io.CopyN(file, reader, 1<<20)
-		require.ErrorIs(t, err, io.EOF)
-		err = file.Close()
-		require.NoError(t, err)
-	}
-	return directory
+func planCompleteResource(name string) []*proto.Response {
+	return []*proto.Response{{
+		Type: &proto.Response_Plan{
+			Plan: &proto.PlanComplete{
+				Resources: []*proto.Resource{{
+					Name: name,
+				}},
+			},
+		},
+	}}
+}
+
+func applyCompleteResource(name string) []*proto.Response {
+	return []*proto.Response{{
+		Type: &proto.Response_Apply{
+			Apply: &proto.ApplyComplete{
+				Resources: []*proto.Resource{{
+					Name: name,
+				}},
+			},
+		},
+	}}
 }

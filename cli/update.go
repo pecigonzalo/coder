@@ -2,71 +2,44 @@ package cli
 
 import (
 	"fmt"
-	"time"
 
-	"github.com/spf13/cobra"
+	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/cli/cliflag"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/serpent"
 )
 
-func update() *cobra.Command {
+func (r *RootCmd) update() *serpent.Command {
 	var (
-		parameterFile string
-		alwaysPrompt  bool
+		parameterFlags workspaceParameterFlags
+		bflags         buildFlags
 	)
-
-	cmd := &cobra.Command{
+	client := new(codersdk.Client)
+	cmd := &serpent.Command{
 		Annotations: workspaceCommand,
 		Use:         "update <workspace>",
-		Args:        cobra.ExactArgs(1),
-		Short:       "Update a workspace",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := CreateClient(cmd)
+		Short:       "Will update and start a given workspace if it is out of date",
+		Long:        "Use --always-prompt to change the parameter values of the workspace.",
+		Middleware: serpent.Chain(
+			serpent.RequireNArgs(1),
+			r.InitClient(client),
+		),
+		Handler: func(inv *serpent.Invocation) error {
+			workspace, err := namedWorkspace(inv.Context(), client, inv.Args[0])
 			if err != nil {
 				return err
 			}
-			workspace, err := namedWorkspace(cmd, client, args[0])
-			if err != nil {
-				return err
-			}
-			if !workspace.Outdated && !alwaysPrompt {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Workspace isn't outdated!\n")
-				return nil
-			}
-			template, err := client.Template(cmd.Context(), workspace.TemplateID)
-			if err != nil {
+			if !workspace.Outdated && !parameterFlags.promptRichParameters && !parameterFlags.promptEphemeralParameters && len(parameterFlags.ephemeralParameters) == 0 {
+				_, _ = fmt.Fprintf(inv.Stdout, "Workspace is up-to-date.\n")
 				return nil
 			}
 
-			var existingParams []codersdk.Parameter
-			if !alwaysPrompt {
-				existingParams, err = client.Parameters(cmd.Context(), codersdk.ParameterWorkspace, workspace.ID)
-				if err != nil {
-					return nil
-				}
+			build, err := startWorkspace(inv, client, workspace, parameterFlags, bflags, WorkspaceUpdate)
+			if err != nil {
+				return xerrors.Errorf("start workspace: %w", err)
 			}
 
-			parameters, err := prepWorkspaceBuild(cmd, client, prepWorkspaceBuildArgs{
-				Template:         template,
-				ExistingParams:   existingParams,
-				ParameterFile:    parameterFile,
-				NewWorkspaceName: workspace.Name,
-			})
-			if err != nil {
-				return nil
-			}
-
-			before := time.Now()
-			build, err := client.CreateWorkspaceBuild(cmd.Context(), workspace.ID, codersdk.CreateWorkspaceBuildRequest{
-				TemplateVersionID: template.ActiveVersionID,
-				Transition:        workspace.LatestBuild.Transition,
-				ParameterValues:   parameters,
-			})
-			if err != nil {
-				return err
-			}
-			logs, closer, err := client.WorkspaceBuildLogsAfter(cmd.Context(), build.ID, before)
+			logs, closer, err := client.WorkspaceBuildLogsAfter(inv.Context(), build.ID, 0)
 			if err != nil {
 				return err
 			}
@@ -76,13 +49,13 @@ func update() *cobra.Command {
 				if !ok {
 					break
 				}
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Output: %s\n", log.Output)
+				_, _ = fmt.Fprintf(inv.Stdout, "Output: %s\n", log.Output)
 			}
 			return nil
 		},
 	}
 
-	cmd.Flags().BoolVar(&alwaysPrompt, "always-prompt", false, "Always prompt all parameters. Does not pull parameter values from existing workspace")
-	cliflag.StringVarP(cmd.Flags(), &parameterFile, "parameter-file", "", "CODER_PARAMETER_FILE", "", "Specify a file path with parameter values.")
+	cmd.Options = append(cmd.Options, parameterFlags.allOptions()...)
+	cmd.Options = append(cmd.Options, bflags.cliOptions()...)
 	return cmd
 }

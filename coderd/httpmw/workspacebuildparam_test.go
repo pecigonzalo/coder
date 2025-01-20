@@ -2,69 +2,40 @@ package httpmw_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/databasefake"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/cryptorand"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbgen"
+	"github.com/coder/coder/v2/coderd/database/dbmem"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func TestWorkspaceBuildParam(t *testing.T) {
 	t.Parallel()
 
-	setupAuthentication := func(db database.Store) (*http.Request, database.Workspace) {
+	setupAuthentication := func(db database.Store) (*http.Request, database.WorkspaceTable) {
 		var (
-			id, secret = randomAPIKeyParts()
-			hashed     = sha256.Sum256([]byte(secret))
+			user     = dbgen.User(t, db, database.User{})
+			_, token = dbgen.APIKey(t, db, database.APIKey{
+				UserID: user.ID,
+			})
+			workspace = dbgen.Workspace(t, db, database.WorkspaceTable{
+				OwnerID: user.ID,
+			})
 		)
+
 		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set(codersdk.SessionCustomHeader, fmt.Sprintf("%s-%s", id, secret))
-
-		userID := uuid.New()
-		username, err := cryptorand.String(8)
-		require.NoError(t, err)
-		user, err := db.InsertUser(r.Context(), database.InsertUserParams{
-			ID:             userID,
-			Email:          "testaccount@coder.com",
-			HashedPassword: hashed[:],
-			Username:       username,
-			CreatedAt:      database.Now(),
-			UpdatedAt:      database.Now(),
-		})
-		require.NoError(t, err)
-
-		_, err = db.InsertAPIKey(r.Context(), database.InsertAPIKeyParams{
-			ID:           id,
-			UserID:       user.ID,
-			HashedSecret: hashed[:],
-			LastUsed:     database.Now(),
-			ExpiresAt:    database.Now().Add(time.Minute),
-			LoginType:    database.LoginTypePassword,
-			Scope:        database.APIKeyScopeAll,
-		})
-		require.NoError(t, err)
-
-		workspace, err := db.InsertWorkspace(context.Background(), database.InsertWorkspaceParams{
-			ID:         uuid.New(),
-			TemplateID: uuid.New(),
-			OwnerID:    user.ID,
-			Name:       "potato",
-		})
-		require.NoError(t, err)
+		r.Header.Set(codersdk.SessionTokenHeader, token)
 
 		ctx := chi.NewRouteContext()
-		ctx.URLParams.Add("user", userID.String())
+		ctx.URLParams.Add("user", user.ID.String())
 		ctx.URLParams.Add("workspace", workspace.Name)
 		r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, ctx))
 		return r, workspace
@@ -72,7 +43,7 @@ func TestWorkspaceBuildParam(t *testing.T) {
 
 	t.Run("None", func(t *testing.T) {
 		t.Parallel()
-		db := databasefake.New()
+		db := dbmem.New()
 		rtr := chi.NewRouter()
 		rtr.Use(httpmw.ExtractWorkspaceBuildParam(db))
 		rtr.Get("/", nil)
@@ -87,7 +58,7 @@ func TestWorkspaceBuildParam(t *testing.T) {
 
 	t.Run("NotFound", func(t *testing.T) {
 		t.Parallel()
-		db := databasefake.New()
+		db := dbmem.New()
 		rtr := chi.NewRouter()
 		rtr.Use(httpmw.ExtractWorkspaceBuildParam(db))
 		rtr.Get("/", nil)
@@ -104,10 +75,10 @@ func TestWorkspaceBuildParam(t *testing.T) {
 
 	t.Run("WorkspaceBuild", func(t *testing.T) {
 		t.Parallel()
-		db := databasefake.New()
+		db := dbmem.New()
 		rtr := chi.NewRouter()
 		rtr.Use(
-			httpmw.ExtractAPIKey(httpmw.ExtractAPIKeyConfig{
+			httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
 				DB:              db,
 				RedirectToLogin: false,
 			}),
@@ -120,11 +91,12 @@ func TestWorkspaceBuildParam(t *testing.T) {
 		})
 
 		r, workspace := setupAuthentication(db)
-		workspaceBuild, err := db.InsertWorkspaceBuild(context.Background(), database.InsertWorkspaceBuildParams{
-			ID:          uuid.New(),
+		workspaceBuild := dbgen.WorkspaceBuild(t, db, database.WorkspaceBuild{
+			Transition:  database.WorkspaceTransitionStart,
+			Reason:      database.BuildReasonInitiator,
 			WorkspaceID: workspace.ID,
 		})
-		require.NoError(t, err)
+
 		chi.RouteContext(r.Context()).URLParams.Add("workspacebuild", workspaceBuild.ID.String())
 		rw := httptest.NewRecorder()
 		rtr.ServeHTTP(rw, r)

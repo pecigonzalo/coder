@@ -4,62 +4,110 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/kirsle/configdir"
+	"golang.org/x/xerrors"
+)
+
+const (
+	FlagName = "global-config"
 )
 
 // Root represents the configuration directory.
 type Root string
 
+// mustNotBeEmpty prevents us from accidentally writing configuration to the
+// current directory. This is primarily valuable in development, where we may
+// accidentally use an empty root.
+func (r Root) mustNotEmpty() {
+	if r == "" {
+		panic("config root must not be empty")
+	}
+}
+
 func (r Root) Session() File {
+	r.mustNotEmpty()
 	return File(filepath.Join(string(r), "session"))
 }
 
+// ReplicaID is a unique identifier for the Coder server.
+func (r Root) ReplicaID() File {
+	r.mustNotEmpty()
+	return File(filepath.Join(string(r), "replica_id"))
+}
+
 func (r Root) URL() File {
+	r.mustNotEmpty()
 	return File(filepath.Join(string(r), "url"))
 }
 
 func (r Root) Organization() File {
+	r.mustNotEmpty()
 	return File(filepath.Join(string(r), "organization"))
 }
 
 func (r Root) DotfilesURL() File {
+	r.mustNotEmpty()
 	return File(filepath.Join(string(r), "dotfilesurl"))
 }
 
 func (r Root) PostgresPath() string {
+	r.mustNotEmpty()
 	return filepath.Join(string(r), "postgres")
 }
 
 func (r Root) PostgresPassword() File {
+	r.mustNotEmpty()
 	return File(filepath.Join(r.PostgresPath(), "password"))
 }
 
 func (r Root) PostgresPort() File {
+	r.mustNotEmpty()
 	return File(filepath.Join(r.PostgresPath(), "port"))
 }
 
 // File provides convenience methods for interacting with *os.File.
 type File string
 
+func (f File) Exists() bool {
+	if f == "" {
+		return false
+	}
+	_, err := os.Stat(string(f))
+	return err == nil
+}
+
 // Delete deletes the file.
 func (f File) Delete() error {
+	if f == "" {
+		return xerrors.Errorf("empty file path")
+	}
 	return os.Remove(string(f))
 }
 
 // Write writes the string to the file.
 func (f File) Write(s string) error {
-	return write(string(f), 0600, []byte(s))
+	if f == "" {
+		return xerrors.Errorf("empty file path")
+	}
+	return write(string(f), 0o600, []byte(s))
 }
 
-// Read reads the file to a string.
+// Read reads the file to a string. All leading and trailing whitespace
+// is removed.
 func (f File) Read() (string, error) {
+	if f == "" {
+		return "", xerrors.Errorf("empty file path")
+	}
 	byt, err := read(string(f))
-	return string(byt), err
+	return strings.TrimSpace(string(byt)), err
 }
 
 // open opens a file in the configuration directory,
 // creating all intermediate directories.
 func open(path string, flag int, mode os.FileMode) (*os.File, error) {
-	err := os.MkdirAll(filepath.Dir(path), 0750)
+	err := os.MkdirAll(filepath.Dir(path), 0o750)
 	if err != nil {
 		return nil, err
 	}
@@ -84,4 +132,12 @@ func read(path string) ([]byte, error) {
 	}
 	defer fi.Close()
 	return io.ReadAll(fi)
+}
+
+func DefaultDir() string {
+	configDir := configdir.LocalConfig("coderv2")
+	if dir := os.Getenv("CLIDOCGEN_CONFIG_DIRECTORY"); dir != "" {
+		configDir = dir
+	}
+	return configDir
 }

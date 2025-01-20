@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/cryptorand"
+	"github.com/coder/coder/v2/cryptorand"
 )
 
 func TestString(t *testing.T) {
@@ -91,7 +91,6 @@ func TestStringCharset(t *testing.T) {
 		},
 	}
 
-	//nolint:paralleltest
 	for _, test := range tests {
 		test := test
 		t.Run(test.Name, func(t *testing.T) {

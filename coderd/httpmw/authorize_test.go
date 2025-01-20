@@ -12,41 +12,41 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/sqlc-dev/pqtype"
 	"github.com/stretchr/testify/require"
-	"github.com/tabbed/pqtype"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/dbtestutil"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbtestutil"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func TestExtractUserRoles(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
 		Name    string
-		AddUser func(db database.Store) (database.User, []string, string)
+		AddUser func(db database.Store) (database.User, []rbac.RoleIdentifier, string)
 	}{
 		{
 			Name: "Member",
-			AddUser: func(db database.Store) (database.User, []string, string) {
-				roles := []string{}
-				user, token := addUser(t, db, roles...)
-				return user, append(roles, rbac.RoleMember()), token
+			AddUser: func(db database.Store) (database.User, []rbac.RoleIdentifier, string) {
+				user, token := addUser(t, db)
+				return user, []rbac.RoleIdentifier{rbac.RoleMember()}, token
 			},
 		},
 		{
-			Name: "Admin",
-			AddUser: func(db database.Store) (database.User, []string, string) {
-				roles := []string{rbac.RoleOwner()}
+			Name: "Owner",
+			AddUser: func(db database.Store) (database.User, []rbac.RoleIdentifier, string) {
+				roles := []string{codersdk.RoleOwner}
 				user, token := addUser(t, db, roles...)
-				return user, append(roles, rbac.RoleMember()), token
+				return user, []rbac.RoleIdentifier{rbac.RoleOwner(), rbac.RoleMember()}, token
 			},
 		},
 		{
 			Name: "OrgMember",
-			AddUser: func(db database.Store) (database.User, []string, string) {
+			AddUser: func(db database.Store) (database.User, []rbac.RoleIdentifier, string) {
 				roles := []string{}
 				user, token := addUser(t, db, roles...)
 				org, err := db.InsertOrganization(context.Background(), database.InsertOrganizationParams{
@@ -67,15 +67,15 @@ func TestExtractUserRoles(t *testing.T) {
 					Roles:          orgRoles,
 				})
 				require.NoError(t, err)
-				return user, append(roles, append(orgRoles, rbac.RoleMember(), rbac.RoleOrgMember(org.ID))...), token
+				return user, []rbac.RoleIdentifier{rbac.RoleMember(), rbac.ScopedRoleOrgMember(org.ID)}, token
 			},
 		},
 		{
 			Name: "MultipleOrgMember",
-			AddUser: func(db database.Store) (database.User, []string, string) {
-				roles := []string{}
-				user, token := addUser(t, db, roles...)
-				roles = append(roles, rbac.RoleMember())
+			AddUser: func(db database.Store) (database.User, []rbac.RoleIdentifier, string) {
+				expected := []rbac.RoleIdentifier{}
+				user, token := addUser(t, db)
+				expected = append(expected, rbac.RoleMember())
 				for i := 0; i < 3; i++ {
 					organization, err := db.InsertOrganization(context.Background(), database.InsertOrganizationParams{
 						ID:          uuid.New(),
@@ -88,7 +88,8 @@ func TestExtractUserRoles(t *testing.T) {
 
 					orgRoles := []string{}
 					if i%2 == 0 {
-						orgRoles = append(orgRoles, rbac.RoleOrgAdmin(organization.ID))
+						orgRoles = append(orgRoles, codersdk.RoleOrganizationAdmin)
+						expected = append(expected, rbac.ScopedRoleOrgAdmin(organization.ID))
 					}
 					_, err = db.InsertOrganizationMember(context.Background(), database.InsertOrganizationMemberParams{
 						OrganizationID: organization.ID,
@@ -98,10 +99,9 @@ func TestExtractUserRoles(t *testing.T) {
 						Roles:          orgRoles,
 					})
 					require.NoError(t, err)
-					roles = append(roles, orgRoles...)
-					roles = append(roles, rbac.RoleOrgMember(organization.ID))
+					expected = append(expected, rbac.ScopedRoleOrgMember(organization.ID))
 				}
-				return user, roles, token
+				return user, expected, token
 			},
 		},
 	}
@@ -118,7 +118,7 @@ func TestExtractUserRoles(t *testing.T) {
 				rtr                   = chi.NewRouter()
 			)
 			rtr.Use(
-				httpmw.ExtractAPIKey(httpmw.ExtractAPIKeyConfig{
+				httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
 					DB:              db,
 					OAuth2Configs:   &httpmw.OAuth2Configs{},
 					RedirectToLogin: false,
@@ -126,12 +126,12 @@ func TestExtractUserRoles(t *testing.T) {
 			)
 			rtr.Get("/", func(_ http.ResponseWriter, r *http.Request) {
 				roles := httpmw.UserAuthorization(r)
-				require.ElementsMatch(t, user.ID, roles.ID)
-				require.ElementsMatch(t, expRoles, roles.Roles)
+				require.Equal(t, user.ID.String(), roles.ID)
+				require.ElementsMatch(t, expRoles, roles.Roles.Names())
 			})
 
 			req := httptest.NewRequest("GET", "/", nil)
-			req.Header.Set(codersdk.SessionCustomHeader, token)
+			req.Header.Set(codersdk.SessionTokenHeader, token)
 
 			rtr.ServeHTTP(rw, req)
 			resp := rw.Result()
@@ -146,6 +146,9 @@ func addUser(t *testing.T, db database.Store, roles ...string) (database.User, s
 		id, secret = randomAPIKeyParts()
 		hashed     = sha256.Sum256([]byte(secret))
 	)
+	if roles == nil {
+		roles = []string{}
+	}
 
 	user, err := db.InsertUser(context.Background(), database.InsertUserParams{
 		ID:        uuid.New(),
@@ -156,12 +159,19 @@ func addUser(t *testing.T, db database.Store, roles ...string) (database.User, s
 	})
 	require.NoError(t, err)
 
+	user, err = db.UpdateUserStatus(context.Background(), database.UpdateUserStatusParams{
+		ID:        user.ID,
+		Status:    database.UserStatusActive,
+		UpdatedAt: dbtime.Now(),
+	})
+	require.NoError(t, err)
+
 	_, err = db.InsertAPIKey(context.Background(), database.InsertAPIKeyParams{
 		ID:           id,
 		UserID:       user.ID,
 		HashedSecret: hashed[:],
-		LastUsed:     database.Now(),
-		ExpiresAt:    database.Now().Add(time.Minute),
+		LastUsed:     dbtime.Now(),
+		ExpiresAt:    dbtime.Now().Add(time.Minute),
 		LoginType:    database.LoginTypePassword,
 		Scope:        database.APIKeyScopeAll,
 		IPAddress: pqtype.Inet{

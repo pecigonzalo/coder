@@ -1,50 +1,72 @@
-import { useMachine } from "@xstate/react"
-import React from "react"
-import { Helmet } from "react-helmet-async"
-import { useNavigate, useParams } from "react-router-dom"
-import { pageTitle } from "util/page"
-import { editGroupMachine } from "xServices/groups/editGroupXService"
-import SettingsGroupPageView from "./SettingsGroupPageView"
+import { getErrorMessage } from "api/errors";
+import { group, patchGroup } from "api/queries/groups";
+import { ErrorAlert } from "components/Alert/ErrorAlert";
+import { displayError } from "components/GlobalSnackbar/utils";
+import { Loader } from "components/Loader/Loader";
+import type { FC } from "react";
+import { Helmet } from "react-helmet-async";
+import { useMutation, useQuery, useQueryClient } from "react-query";
+import { useNavigate, useParams } from "react-router-dom";
+import { pageTitle } from "utils/page";
+import SettingsGroupPageView from "./SettingsGroupPageView";
 
-export const SettingsGroupPage: React.FC = () => {
-  const { groupId } = useParams()
-  if (!groupId) {
-    throw new Error("Group ID not defined.")
-  }
+export const SettingsGroupPage: FC = () => {
+	const { groupName } = useParams() as { groupName: string };
+	const queryClient = useQueryClient();
+	const groupQuery = useQuery(group("default", groupName));
+	const patchGroupMutation = useMutation(patchGroup(queryClient));
+	const navigate = useNavigate();
 
-  const navigate = useNavigate()
+	const navigateToGroup = () => {
+		navigate(`/deployment/groups/${groupName}`);
+	};
 
-  const navigateToGroup = () => {
-    navigate(`/groups/${groupId}`)
-  }
+	const helmet = (
+		<Helmet>
+			<title>{pageTitle("Settings Group")}</title>
+		</Helmet>
+	);
 
-  const [editState, sendEditEvent] = useMachine(editGroupMachine, {
-    context: {
-      groupId,
-    },
-    actions: {
-      onUpdate: navigateToGroup,
-    },
-  })
-  const { updateGroupFormErrors, group } = editState.context
+	if (groupQuery.error) {
+		return <ErrorAlert error={groupQuery.error} />;
+	}
 
-  return (
-    <>
-      <Helmet>
-        <title>{pageTitle("Settings Group")}</title>
-      </Helmet>
+	if (groupQuery.isLoading || !groupQuery.data) {
+		return (
+			<>
+				{helmet}
+				<Loader />
+			</>
+		);
+	}
 
-      <SettingsGroupPageView
-        onCancel={navigateToGroup}
-        onSubmit={(data) => {
-          sendEditEvent({ type: "UPDATE", data })
-        }}
-        group={group}
-        formErrors={updateGroupFormErrors}
-        isLoading={editState.matches("loading")}
-        isUpdating={editState.matches("updating")}
-      />
-    </>
-  )
-}
-export default SettingsGroupPage
+	const groupId = groupQuery.data.id;
+
+	return (
+		<>
+			{helmet}
+
+			<SettingsGroupPageView
+				onCancel={navigateToGroup}
+				onSubmit={async (data) => {
+					try {
+						await patchGroupMutation.mutateAsync({
+							groupId,
+							...data,
+							add_users: [],
+							remove_users: [],
+						});
+						navigate(`/deployment/groups/${data.name}`, { replace: true });
+					} catch (error) {
+						displayError(getErrorMessage(error, "Failed to update group"));
+					}
+				}}
+				group={groupQuery.data}
+				formErrors={groupQuery.error}
+				isLoading={groupQuery.isLoading}
+				isUpdating={patchGroupMutation.isLoading}
+			/>
+		</>
+	);
+};
+export default SettingsGroupPage;

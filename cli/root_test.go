@@ -2,131 +2,114 @@ package cli_test
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 
-	"github.com/spf13/cobra"
+	"github.com/coder/coder/v2/coderd"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
+	"github.com/coder/serpent"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/buildinfo"
-	"github.com/coder/coder/cli"
-	"github.com/coder/coder/cli/cliflag"
-	"github.com/coder/coder/cli/clitest"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/buildinfo"
+	"github.com/coder/coder/v2/cli"
+	"github.com/coder/coder/v2/cli/clitest"
 )
+
+//nolint:tparallel,paralleltest
+func TestCommandHelp(t *testing.T) {
+	// Test with AGPL commands
+	getCmds := func(t *testing.T) *serpent.Command {
+		// Must return a fresh instance of cmds each time.
+
+		t.Helper()
+		var root cli.RootCmd
+		rootCmd, err := root.Command(root.AGPL())
+		require.NoError(t, err)
+
+		return rootCmd
+	}
+	clitest.TestCommandHelp(t, getCmds, append(clitest.DefaultCases(),
+		clitest.CommandHelpCase{
+			Name: "coder agent --help",
+			Cmd:  []string{"agent", "--help"},
+		},
+		clitest.CommandHelpCase{
+			Name: "coder list --output json",
+			Cmd:  []string{"list", "--output", "json"},
+		},
+		clitest.CommandHelpCase{
+			Name: "coder users list --output json",
+			Cmd:  []string{"users", "list", "--output", "json"},
+		},
+		clitest.CommandHelpCase{
+			Name: "coder users list",
+			Cmd:  []string{"users", "list"},
+		},
+	))
+}
 
 func TestRoot(t *testing.T) {
 	t.Parallel()
-	t.Run("FormatCobraError", func(t *testing.T) {
+	t.Run("MissingRootCommand", func(t *testing.T) {
 		t.Parallel()
 
-		t.Run("OK", func(t *testing.T) {
-			t.Parallel()
+		out := new(bytes.Buffer)
 
-			cmd, _ := clitest.New(t, "delete")
+		inv, _ := clitest.New(t, "idontexist")
+		inv.Stdout = out
 
-			cmd, err := cmd.ExecuteC()
-			errStr := cli.FormatCobraError(err, cmd)
-			require.Contains(t, errStr, "Run 'coder delete --help' for usage.")
-		})
+		err := inv.Run()
+		assert.ErrorContains(t, err,
+			`unrecognized subcommand "idontexist"`)
+		require.Empty(t, out.String())
+	})
 
-		t.Run("Verbose", func(t *testing.T) {
-			t.Parallel()
+	t.Run("MissingSubcommand", func(t *testing.T) {
+		t.Parallel()
 
-			// Test that the verbose error is masked without verbose flag.
-			t.Run("NoVerboseAPIError", func(t *testing.T) {
-				t.Parallel()
+		out := new(bytes.Buffer)
 
-				cmd, _ := clitest.New(t)
+		inv, _ := clitest.New(t, "server", "idontexist")
+		inv.Stdout = out
 
-				cmd.RunE = func(cmd *cobra.Command, args []string) error {
-					var err error = &codersdk.Error{
-						Response: codersdk.Response{
-							Message: "This is a message.",
-						},
-						Helper: "Try this instead.",
-					}
+		err := inv.Run()
+		// subcommand error only when command has subcommands
+		assert.ErrorContains(t, err,
+			`unrecognized subcommand "idontexist"`)
+		require.Empty(t, out.String())
+	})
 
-					err = xerrors.Errorf("wrap me: %w", err)
+	t.Run("BadSubcommandArgs", func(t *testing.T) {
+		t.Parallel()
 
-					return err
-				}
+		out := new(bytes.Buffer)
 
-				cmd, err := cmd.ExecuteC()
-				errStr := cli.FormatCobraError(err, cmd)
-				require.Contains(t, errStr, "This is a message. Try this instead.")
-				require.NotContains(t, errStr, err.Error())
-			})
+		inv, _ := clitest.New(t, "list", "idontexist")
+		inv.Stdout = out
 
-			// Assert that a regular error is not masked when verbose is not
-			// specified.
-			t.Run("NoVerboseRegularError", func(t *testing.T) {
-				t.Parallel()
-
-				cmd, _ := clitest.New(t)
-
-				cmd.RunE = func(cmd *cobra.Command, args []string) error {
-					return xerrors.Errorf("this is a non-codersdk error: %w", xerrors.Errorf("a wrapped error"))
-				}
-
-				cmd, err := cmd.ExecuteC()
-				errStr := cli.FormatCobraError(err, cmd)
-				require.Contains(t, errStr, err.Error())
-			})
-
-			// Test that both the friendly error and the verbose error are
-			// displayed when verbose is passed.
-			t.Run("APIError", func(t *testing.T) {
-				t.Parallel()
-
-				cmd, _ := clitest.New(t, "--verbose")
-
-				cmd.RunE = func(cmd *cobra.Command, args []string) error {
-					var err error = &codersdk.Error{
-						Response: codersdk.Response{
-							Message: "This is a message.",
-						},
-						Helper: "Try this instead.",
-					}
-
-					err = xerrors.Errorf("wrap me: %w", err)
-
-					return err
-				}
-
-				cmd, err := cmd.ExecuteC()
-				errStr := cli.FormatCobraError(err, cmd)
-				require.Contains(t, errStr, "This is a message. Try this instead.")
-				require.Contains(t, errStr, err.Error())
-			})
-
-			// Assert that a regular error is not masked when verbose specified.
-			t.Run("RegularError", func(t *testing.T) {
-				t.Parallel()
-
-				cmd, _ := clitest.New(t, "--verbose")
-
-				cmd.RunE = func(cmd *cobra.Command, args []string) error {
-					return xerrors.Errorf("this is a non-codersdk error: %w", xerrors.Errorf("a wrapped error"))
-				}
-
-				cmd, err := cmd.ExecuteC()
-				errStr := cli.FormatCobraError(err, cmd)
-				require.Contains(t, errStr, err.Error())
-			})
-		})
+		err := inv.Run()
+		assert.ErrorContains(t, err,
+			`wanted no args but got 1 [idontexist]`)
+		require.Empty(t, out.String())
 	})
 
 	t.Run("Version", func(t *testing.T) {
 		t.Parallel()
 
 		buf := new(bytes.Buffer)
-		cmd, _ := clitest.New(t, "version")
-		cmd.SetOut(buf)
-		err := cmd.Execute()
+		inv, _ := clitest.New(t, "version")
+		inv.Stdout = buf
+		err := inv.Run()
 		require.NoError(t, err)
 
 		output := buf.String()
@@ -137,36 +120,141 @@ func TestRoot(t *testing.T) {
 	t.Run("Header", func(t *testing.T) {
 		t.Parallel()
 
-		done := make(chan struct{})
+		var url string
+		var called int64
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt64(&called, 1)
 			assert.Equal(t, "wow", r.Header.Get("X-Testing"))
+			assert.Equal(t, "Dean was Here!", r.Header.Get("Cool-Header"))
+			assert.Equal(t, "very-wow-"+url, r.Header.Get("X-Process-Testing"))
+			assert.Equal(t, "more-wow", r.Header.Get("X-Process-Testing2"))
 			w.WriteHeader(http.StatusGone)
-			select {
-			case <-done:
-				close(done)
-			default:
-			}
 		}))
 		defer srv.Close()
+		url = srv.URL
 		buf := new(bytes.Buffer)
-		cmd, _ := clitest.New(t, "--header", "X-Testing=wow", "login", srv.URL)
-		cmd.SetOut(buf)
-		// This won't succeed, because we're using the login cmd to assert requests.
-		_ = cmd.Execute()
+		coderURLEnv := "$CODER_URL"
+		if runtime.GOOS == "windows" {
+			coderURLEnv = "%CODER_URL%"
+		}
+		inv, _ := clitest.New(t,
+			"--no-feature-warning",
+			"--no-version-warning",
+			"--header", "X-Testing=wow",
+			"--header", "Cool-Header=Dean was Here!",
+			"--header-command", "printf X-Process-Testing=very-wow-"+coderURLEnv+"'\\r\\n'X-Process-Testing2=more-wow",
+			"login", srv.URL,
+		)
+		inv.Stdout = buf
+
+		err := inv.Run()
+		require.Error(t, err)
+		require.ErrorContains(t, err, "unexpected status code 410")
+		require.EqualValues(t, 1, atomic.LoadInt64(&called), "called exactly once")
+	})
+}
+
+// TestDERPHeaders ensures that the client sends the global `--header`s and
+// `--header-command` to the DERP server when connecting.
+func TestDERPHeaders(t *testing.T) {
+	t.Parallel()
+
+	// Create a coderd API instance the hard way since we need to change the
+	// handler to inject our custom /derp handler.
+	dv := coderdtest.DeploymentValues(t)
+	dv.DERP.Config.BlockDirect = true
+	setHandler, cancelFunc, serverURL, newOptions := coderdtest.NewOptions(t, &coderdtest.Options{
+		DeploymentValues: dv,
 	})
 
-	t.Run("Experimental", func(t *testing.T) {
-		t.Parallel()
-
-		cmd, _ := clitest.New(t, "--experimental")
-		err := cmd.Execute()
-		require.NoError(t, err)
-		require.True(t, cli.ExperimentalEnabled(cmd))
-
-		cmd, _ = clitest.New(t, "help", "--verbose")
-		_ = cmd.Execute()
-		_, set := cliflag.IsSet(cmd, "verbose")
-		require.True(t, set)
-		require.ErrorContains(t, cli.EnsureExperimental(cmd, "verbose"), "--experimental")
+	// We set the handler after server creation for the access URL.
+	coderAPI := coderd.New(newOptions)
+	setHandler(coderAPI.RootHandler)
+	provisionerCloser := coderdtest.NewProvisionerDaemon(t, coderAPI)
+	t.Cleanup(func() {
+		_ = provisionerCloser.Close()
 	})
+	client := codersdk.New(serverURL)
+	t.Cleanup(func() {
+		cancelFunc()
+		_ = provisionerCloser.Close()
+		_ = coderAPI.Close()
+		client.HTTPClient.CloseIdleConnections()
+	})
+
+	var (
+		admin              = coderdtest.CreateFirstUser(t, client)
+		member, memberUser = coderdtest.CreateAnotherUser(t, client, admin.OrganizationID)
+		workspace          = runAgent(t, client, memberUser.ID, newOptions.Database)
+	)
+
+	// Inject custom /derp handler so we can inspect the headers.
+	var (
+		expectedHeaders = map[string]string{
+			"X-Test-Header":     "test-value",
+			"Cool-Header":       "Dean was Here!",
+			"X-Process-Testing": "very-wow",
+		}
+		derpCalled int64
+	)
+	setHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/derp") {
+			ok := true
+			for k, v := range expectedHeaders {
+				if r.Header.Get(k) != v {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				// Only increment if all the headers are set, because the agent
+				// calls derp also.
+				atomic.AddInt64(&derpCalled, 1)
+			}
+		}
+
+		coderAPI.RootHandler.ServeHTTP(w, r)
+	}))
+
+	// Connect with the headers set as args.
+	args := []string{
+		"-v",
+		"--no-feature-warning",
+		"--no-version-warning",
+		"ping", workspace.Name,
+		"-n", "1",
+		"--header-command", "printf X-Process-Testing=very-wow",
+	}
+	for k, v := range expectedHeaders {
+		if k != "X-Process-Testing" {
+			args = append(args, "--header", fmt.Sprintf("%s=%s", k, v))
+		}
+	}
+	inv, root := clitest.New(t, args...)
+	clitest.SetupConfig(t, member, root)
+	pty := ptytest.New(t)
+	inv.Stdin = pty.Input()
+	inv.Stderr = pty.Output()
+	inv.Stdout = pty.Output()
+
+	ctx := testutil.Context(t, testutil.WaitLong)
+	cmdDone := tGo(t, func() {
+		err := inv.WithContext(ctx).Run()
+		assert.NoError(t, err)
+	})
+
+	pty.ExpectMatch("pong from " + workspace.Name)
+	<-cmdDone
+
+	require.Greater(t, atomic.LoadInt64(&derpCalled), int64(0), "expected /derp to be called at least once")
+}
+
+func TestHandlersOK(t *testing.T) {
+	t.Parallel()
+
+	var root cli.RootCmd
+	cmd, err := root.Command(root.CoreSubcommands())
+	require.NoError(t, err)
+
+	clitest.HandlersOK(t, cmd)
 }

@@ -1,0 +1,20 @@
+coder v0.0.0-devel
+
+USAGE:
+  coder ping [flags] <workspace>
+
+  Ping a workspace
+
+OPTIONS:
+  -n, --num int
+          Specifies the number of pings to perform. By default, pings will
+          continue until interrupted.
+
+  -t, --timeout duration (default: 5s)
+          Specifies how long to wait for a ping to complete.
+
+      --wait duration (default: 1s)
+          Specifies how long to wait between pings.
+
+———
+Run `coder --help` for a list of global options.

@@ -4,20 +4,28 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/spf13/cobra"
-
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/cli/cliutil"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/serpent"
 )
 
-func stop() *cobra.Command {
-	cmd := &cobra.Command{
+func (r *RootCmd) stop() *serpent.Command {
+	var bflags buildFlags
+	client := new(codersdk.Client)
+	cmd := &serpent.Command{
 		Annotations: workspaceCommand,
 		Use:         "stop <workspace>",
 		Short:       "Stop a workspace",
-		Args:        cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			_, err := cliui.Prompt(cmd, cliui.PromptOptions{
+		Middleware: serpent.Chain(
+			serpent.RequireNArgs(1),
+			r.InitClient(client),
+		),
+		Options: serpent.OptionSet{
+			cliui.SkipPromptOption(),
+		},
+		Handler: func(inv *serpent.Invocation) error {
+			_, err := cliui.Prompt(inv, cliui.PromptOptions{
 				Text:      "Confirm stop workspace?",
 				IsConfirm: true,
 			})
@@ -25,31 +33,52 @@ func stop() *cobra.Command {
 				return err
 			}
 
-			client, err := CreateClient(cmd)
+			workspace, err := namedWorkspace(inv.Context(), client, inv.Args[0])
 			if err != nil {
 				return err
 			}
-			workspace, err := namedWorkspace(cmd, client, args[0])
-			if err != nil {
-				return err
+			if workspace.LatestBuild.Job.Status == codersdk.ProvisionerJobPending {
+				// cliutil.WarnMatchedProvisioners also checks if the job is pending
+				// but we still want to avoid users spamming multiple builds that will
+				// not be picked up.
+				cliui.Warn(inv.Stderr, "The workspace is already stopping!")
+				cliutil.WarnMatchedProvisioners(inv.Stderr, workspace.LatestBuild.MatchedProvisioners, workspace.LatestBuild.Job)
+				if _, err := cliui.Prompt(inv, cliui.PromptOptions{
+					Text:      "Enqueue another stop?",
+					IsConfirm: true,
+					Default:   cliui.ConfirmNo,
+				}); err != nil {
+					return err
+				}
 			}
-			before := time.Now()
-			build, err := client.CreateWorkspaceBuild(cmd.Context(), workspace.ID, codersdk.CreateWorkspaceBuildRequest{
+
+			wbr := codersdk.CreateWorkspaceBuildRequest{
 				Transition: codersdk.WorkspaceTransitionStop,
-			})
+			}
+			if bflags.provisionerLogDebug {
+				wbr.LogLevel = codersdk.ProvisionerLogLevelDebug
+			}
+			build, err := client.CreateWorkspaceBuild(inv.Context(), workspace.ID, wbr)
+			if err != nil {
+				return err
+			}
+			cliutil.WarnMatchedProvisioners(inv.Stderr, build.MatchedProvisioners, build.Job)
+
+			err = cliui.WorkspaceBuild(inv.Context(), inv.Stdout, client, build.ID)
 			if err != nil {
 				return err
 			}
 
-			err = cliui.WorkspaceBuild(cmd.Context(), cmd.OutOrStdout(), client, build.ID, before)
-			if err != nil {
-				return err
-			}
+			_, _ = fmt.Fprintf(
+				inv.Stdout,
+				"\nThe %s workspace has been stopped at %s!\n", cliui.Keyword(workspace.Name),
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nThe %s workspace has been stopped at %s!\n", cliui.Styles.Keyword.Render(workspace.Name), cliui.Styles.DateTimeStamp.Render(time.Now().Format(time.Stamp)))
+				cliui.Timestamp(time.Now()),
+			)
 			return nil
 		},
 	}
-	cliui.AllowSkipPrompt(cmd)
+	cmd.Options = append(cmd.Options, bflags.cliOptions()...)
+
 	return cmd
 }

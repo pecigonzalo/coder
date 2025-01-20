@@ -1,26 +1,26 @@
 package cli
 
 import (
-	"github.com/spf13/cobra"
-
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/serpent"
 )
 
-func users() *cobra.Command {
-	cmd := &cobra.Command{
+func (r *RootCmd) users() *serpent.Command {
+	cmd := &serpent.Command{
 		Short:   "Manage users",
-		Use:     "users",
+		Use:     "users [subcommand]",
 		Aliases: []string{"user"},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cmd.Help()
+		Handler: func(inv *serpent.Invocation) error {
+			return inv.Command.HelpHandler(inv)
+		},
+		Children: []*serpent.Command{
+			r.userCreate(),
+			r.userList(),
+			r.userSingle(),
+			r.userDelete(),
+			r.createUserStatusCommand(codersdk.UserStatusActive),
+			r.createUserStatusCommand(codersdk.UserStatusSuspended),
 		},
 	}
-	cmd.AddCommand(
-		userCreate(),
-		userList(),
-		userSingle(),
-		createUserStatusCommand(codersdk.UserStatusActive),
-		createUserStatusCommand(codersdk.UserStatusSuspended),
-	)
 	return cmd
 }

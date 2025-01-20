@@ -3,12 +3,12 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
       time: "06:00"
       timezone: "America/Chicago"
     labels: []
     commit-message:
-      prefix: "chore"
+      prefix: "ci"
     ignore:
       # These actions deliver the latest versions by updating the major
       # release tag, so ignore minor and patch versions
@@ -24,51 +24,97 @@ updates:
         update-types:
           - version-update:semver-minor
           - version-update:semver-patch
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
+      time: "06:00"
+      timezone: "America/Chicago"
+    commit-message:
+      prefix: "chore"
+    labels: []
+    open-pull-requests-limit: 15
+    groups:
+      x:
+        patterns:
+          - "golang.org/x/*"
+    ignore:
+      # Ignore patch updates for all dependencies
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-patch
+
+  # Update our Dockerfile.
+  - package-ecosystem: "docker"
+    directories:
+      - "/dogfood/contents"
+      - "/scripts"
+      - "/examples/templates/docker/build"
+      - "/examples/parameters/build"
+      - "/scaletest/templates/scaletest-runner"
+      - "/scripts/ironbank"
+    schedule:
+      interval: "weekly"
       time: "06:00"
       timezone: "America/Chicago"
     commit-message:
       prefix: "chore"
     labels: []
     ignore:
-      # Ignore patch updates for all dependencies
-      - dependency-name: "*"
-        update-types:
-        - version-update:semver-patch
+      # We need to coordinate terraform updates with the version hardcoded in
+      # our Go code.
+      - dependency-name: "terraform"
 
   - package-ecosystem: "npm"
-    directory: "/site/"
+    directories:
+      - "/site"
+      - "/offlinedocs"
+      - "/scripts"
+      - "/scripts/apidocgen"
+
     schedule:
       interval: "monthly"
       time: "06:00"
       timezone: "America/Chicago"
+    reviewers:
+      - "coder/ts"
     commit-message:
       prefix: "chore"
     labels: []
+    groups:
+      xterm:
+        patterns:
+          - "@xterm*"
+      mui:
+        patterns:
+          - "@mui*"
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+      emotion:
+        patterns:
+          - "@emotion*"
+        exclude-patterns:
+          - "jest-runner-eslint"
+      jest:
+        patterns:
+          - "jest"
+          - "@types/jest"
+      vite:
+        patterns:
+          - "vite*"
+          - "@vitejs/plugin-react"
     ignore:
-      # Ignore patch updates for all dependencies
+      # Ignore major version updates to avoid breaking changes
       - dependency-name: "*"
         update-types:
-        - version-update:semver-patch
-      # Ignore major updates to Node.js types, because they need to
-      # correspond to the Node.js engine version
-      - dependency-name: "@types/node"
-        update-types:
           - version-update:semver-major
-
-  - package-ecosystem: "terraform"
-    directory: "/examples/templates"
-    schedule:
-      interval: "monthly"
-      time: "06:00"
-      timezone: "America/Chicago"
-    commit-message:
-      prefix: "chore"
-    labels: []
-    ignore:
-      # We likely want to update this ourselves.
-      - dependency-name: "coder/coder"
+    open-pull-requests-limit: 15

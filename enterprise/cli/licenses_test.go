@@ -13,23 +13,22 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/cli/clitest"
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/enterprise/cli"
-	"github.com/coder/coder/enterprise/coderd/coderdenttest"
-	"github.com/coder/coder/pty/ptytest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/cli/clitest"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/enterprise/coderd/coderdenttest"
+	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
+	"github.com/coder/serpent"
 )
 
-const fakeLicenseJWT = "test.jwt.sig"
-const testWarning = "This is a test warning"
+const (
+	fakeLicenseJWT = "test.jwt.sig"
+	testWarning    = "This is a test warning"
+)
 
 func TestLicensesAddFake(t *testing.T) {
 	t.Parallel()
@@ -37,26 +36,20 @@ func TestLicensesAddFake(t *testing.T) {
 	// so instead we have to fake the HTTP interaction.
 	t.Run("LFlag", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
-		defer cancel()
-		cmd := setupFakeLicenseServerTest(t, "licenses", "add", "-l", fakeLicenseJWT)
-		pty := attachPty(t, cmd)
-		errC := make(chan error)
-		go func() {
-			errC <- cmd.ExecuteContext(ctx)
-		}()
-		require.NoError(t, <-errC)
+		inv := setupFakeLicenseServerTest(t, "licenses", "add", "-l", fakeLicenseJWT)
+		pty := attachPty(t, inv)
+		clitest.Start(t, inv)
 		pty.ExpectMatch("License with ID 1 added")
 	})
 	t.Run("Prompt", func(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 		defer cancel()
-		cmd := setupFakeLicenseServerTest(t, "license", "add")
-		pty := attachPty(t, cmd)
+		inv := setupFakeLicenseServerTest(t, "license", "add")
+		pty := attachPty(t, inv)
 		errC := make(chan error)
 		go func() {
-			errC <- cmd.ExecuteContext(ctx)
+			errC <- inv.WithContext(ctx).Run()
 		}()
 		pty.ExpectMatch("Paste license:")
 		pty.WriteLine(fakeLicenseJWT)
@@ -69,29 +62,29 @@ func TestLicensesAddFake(t *testing.T) {
 		defer cancel()
 		dir := t.TempDir()
 		filename := filepath.Join(dir, "license.jwt")
-		err := os.WriteFile(filename, []byte(fakeLicenseJWT), 0600)
+		err := os.WriteFile(filename, []byte(fakeLicenseJWT), 0o600)
 		require.NoError(t, err)
-		cmd := setupFakeLicenseServerTest(t, "license", "add", "-f", filename)
-		pty := attachPty(t, cmd)
+		inv := setupFakeLicenseServerTest(t, "license", "add", "-f", filename)
+		pty := attachPty(t, inv)
 		errC := make(chan error)
 		go func() {
-			errC <- cmd.ExecuteContext(ctx)
+			errC <- inv.WithContext(ctx).Run()
 		}()
 		require.NoError(t, <-errC)
 		pty.ExpectMatch("License with ID 1 added")
 	})
 	t.Run("StdIn", func(t *testing.T) {
 		t.Parallel()
-		cmd := setupFakeLicenseServerTest(t, "license", "add", "-f", "-")
+		inv := setupFakeLicenseServerTest(t, "license", "add", "-f", "-")
 		r, w := io.Pipe()
-		cmd.SetIn(r)
+		inv.Stdin = r
 		stdout := new(bytes.Buffer)
-		cmd.SetOut(stdout)
+		inv.Stdout = stdout
 		errC := make(chan error)
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 		defer cancel()
 		go func() {
-			errC <- cmd.ExecuteContext(ctx)
+			errC <- inv.WithContext(ctx).Run()
 		}()
 		_, err := w.Write([]byte(fakeLicenseJWT))
 		require.NoError(t, err)
@@ -109,11 +102,11 @@ func TestLicensesAddFake(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 		defer cancel()
-		cmd := setupFakeLicenseServerTest(t, "licenses", "add", "-l", fakeLicenseJWT, "--debug")
-		pty := attachPty(t, cmd)
+		inv := setupFakeLicenseServerTest(t, "licenses", "add", "-l", fakeLicenseJWT, "--debug")
+		pty := attachPty(t, inv)
 		errC := make(chan error)
 		go func() {
-			errC <- cmd.ExecuteContext(ctx)
+			errC <- inv.WithContext(ctx).Run()
 		}()
 		require.NoError(t, <-errC)
 		pty.ExpectMatch("\"f2\": 2")
@@ -124,21 +117,16 @@ func TestLicensesAddReal(t *testing.T) {
 	t.Parallel()
 	t.Run("Fails", func(t *testing.T) {
 		t.Parallel()
-		client := coderdenttest.New(t, nil)
-		coderdtest.CreateFirstUser(t, client)
-		cmd, root := clitest.NewWithSubcommands(t, cli.EnterpriseSubcommands(),
-			"licenses", "add", "-l", fakeLicenseJWT)
-		clitest.SetupConfig(t, client, root)
+		client, _ := coderdenttest.New(t, &coderdenttest.Options{DontAddLicense: true})
+		inv, conf := newCLI(
+			t,
+			"licenses", "add", "-l", fakeLicenseJWT,
+		)
+		clitest.SetupConfig(t, client, conf) //nolint:gocritic // requires owner
 
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
-		defer cancel()
-		errC := make(chan error)
-		go func() {
-			errC <- cmd.ExecuteContext(ctx)
-		}()
-		err := <-errC
+		waiter := clitest.StartWithWaiter(t, inv)
 		var coderError *codersdk.Error
-		require.True(t, xerrors.As(err, &coderError))
+		waiter.RequireAs(&coderError)
 		assert.Equal(t, 400, coderError.StatusCode())
 		assert.Contains(t, "Invalid license", coderError.Message)
 	})
@@ -150,14 +138,15 @@ func TestLicensesListFake(t *testing.T) {
 	// so instead we have to fake the HTTP interaction.
 	t.Run("Mainline", func(t *testing.T) {
 		t.Parallel()
+		expectedLicenseExpires := time.Date(2024, 4, 6, 16, 53, 35, 0, time.UTC)
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 		defer cancel()
-		cmd := setupFakeLicenseServerTest(t, "licenses", "list")
+		inv := setupFakeLicenseServerTest(t, "licenses", "list", "-o", "json")
 		stdout := new(bytes.Buffer)
-		cmd.SetOut(stdout)
+		inv.Stdout = stdout
 		errC := make(chan error)
 		go func() {
-			errC <- cmd.ExecuteContext(ctx)
+			errC <- inv.WithContext(ctx).Run()
 		}()
 		require.NoError(t, <-errC)
 		var licenses []codersdk.License
@@ -168,6 +157,13 @@ func TestLicensesListFake(t *testing.T) {
 		assert.Equal(t, "claim1", licenses[0].Claims["h1"])
 		assert.Equal(t, int32(5), licenses[1].ID)
 		assert.Equal(t, "claim2", licenses[1].Claims["h2"])
+		expiresClaim := licenses[0].Claims["license_expires_human"]
+		expiresString, ok := expiresClaim.(string)
+		require.True(t, ok, "license_expires_human claim is not a string")
+		assert.NotEmpty(t, expiresClaim)
+		expiresTime, err := time.Parse(time.RFC3339, expiresString)
+		require.NoError(t, err)
+		require.Equal(t, expectedLicenseExpires, expiresTime.UTC())
 	})
 }
 
@@ -175,20 +171,21 @@ func TestLicensesListReal(t *testing.T) {
 	t.Parallel()
 	t.Run("Empty", func(t *testing.T) {
 		t.Parallel()
-		client := coderdenttest.New(t, nil)
-		coderdtest.CreateFirstUser(t, client)
-		cmd, root := clitest.NewWithSubcommands(t, cli.EnterpriseSubcommands(),
-			"licenses", "list")
+		client, _ := coderdenttest.New(t, &coderdenttest.Options{DontAddLicense: true})
+		inv, conf := newCLI(
+			t,
+			"licenses", "list", "-o", "json",
+		)
 		stdout := new(bytes.Buffer)
-		cmd.SetOut(stdout)
+		inv.Stdout = stdout
 		stderr := new(bytes.Buffer)
-		cmd.SetErr(stderr)
-		clitest.SetupConfig(t, client, root)
+		inv.Stderr = stderr
+		clitest.SetupConfig(t, client, conf) //nolint:gocritic // requires owner
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 		defer cancel()
 		errC := make(chan error)
 		go func() {
-			errC <- cmd.ExecuteContext(ctx)
+			errC <- inv.WithContext(ctx).Run()
 		}()
 		require.NoError(t, <-errC)
 		assert.Equal(t, "[]\n", stdout.String())
@@ -202,15 +199,11 @@ func TestLicensesDeleteFake(t *testing.T) {
 	// so instead we have to fake the HTTP interaction.
 	t.Run("Mainline", func(t *testing.T) {
 		t.Parallel()
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
-		defer cancel()
-		cmd := setupFakeLicenseServerTest(t, "licenses", "delete", "55")
-		pty := attachPty(t, cmd)
-		errC := make(chan error)
-		go func() {
-			errC <- cmd.ExecuteContext(ctx)
-		}()
-		require.NoError(t, <-errC)
+
+		inv := setupFakeLicenseServerTest(t, "licenses", "delete", "55")
+		pty := attachPty(t, inv)
+
+		clitest.Start(t, inv)
 		pty.ExpectMatch("License with ID 55 deleted")
 	})
 }
@@ -219,41 +212,38 @@ func TestLicensesDeleteReal(t *testing.T) {
 	t.Parallel()
 	t.Run("Empty", func(t *testing.T) {
 		t.Parallel()
-		client := coderdenttest.New(t, nil)
-		coderdtest.CreateFirstUser(t, client)
-		cmd, root := clitest.NewWithSubcommands(t, cli.EnterpriseSubcommands(),
+		client, _ := coderdenttest.New(t, &coderdenttest.Options{DontAddLicense: true})
+		inv, conf := newCLI(
+			t,
 			"licenses", "delete", "1")
-		clitest.SetupConfig(t, client, root)
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
-		defer cancel()
-		errC := make(chan error)
-		go func() {
-			errC <- cmd.ExecuteContext(ctx)
-		}()
-		err := <-errC
+		clitest.SetupConfig(t, client, conf) //nolint:gocritic // requires owner
+
 		var coderError *codersdk.Error
-		require.True(t, xerrors.As(err, &coderError))
+		clitest.StartWithWaiter(t, inv).RequireAs(&coderError)
 		assert.Equal(t, 404, coderError.StatusCode())
 		assert.Contains(t, "Unknown license ID", coderError.Message)
 	})
 }
 
-func setupFakeLicenseServerTest(t *testing.T, args ...string) *cobra.Command {
+func setupFakeLicenseServerTest(t *testing.T, args ...string) *serpent.Invocation {
 	t.Helper()
 	s := httptest.NewServer(newFakeLicenseAPI(t))
 	t.Cleanup(s.Close)
-	cmd, root := clitest.NewWithSubcommands(t, cli.EnterpriseSubcommands(), args...)
-	err := root.URL().Write(s.URL)
+
+	inv, conf := newCLI(t, args...)
+
+	err := conf.URL().Write(s.URL)
 	require.NoError(t, err)
-	err = root.Session().Write("sessiontoken")
+	err = conf.Session().Write("sessiontoken")
 	require.NoError(t, err)
-	return cmd
+
+	return inv
 }
 
-func attachPty(t *testing.T, cmd *cobra.Command) *ptytest.PTY {
+func attachPty(t *testing.T, inv *serpent.Invocation) *ptytest.PTY {
 	pty := ptytest.New(t)
-	cmd.SetIn(pty.Input())
-	cmd.SetOut(pty.Output())
+	inv.Stdin = pty.Input()
+	inv.Stdout = pty.Output()
 	return pty
 }
 
@@ -264,6 +254,7 @@ func newFakeLicenseAPI(t *testing.T) http.Handler {
 	r.Post("/api/v2/licenses", a.postLicense)
 	r.Get("/api/v2/licenses", a.licenses)
 	r.Get("/api/v2/buildinfo", a.noop)
+	r.Get("/api/v2/users/me", a.noop)
 	r.Delete("/api/v2/licenses/{id}", a.deleteLicense)
 	r.Get("/api/v2/entitlements", a.entitlements)
 	return r
@@ -308,7 +299,8 @@ func (s *fakeLicenseAPI) licenses(rw http.ResponseWriter, _ *http.Request) {
 			ID:         1,
 			UploadedAt: time.Now(),
 			Claims: map[string]interface{}{
-				"h1": "claim1",
+				"license_expires": 1712422415,
+				"h1":              "claim1",
 				"features": map[string]int64{
 					"f1": 1,
 					"f2": 2,
@@ -338,7 +330,7 @@ func (s *fakeLicenseAPI) deleteLicense(rw http.ResponseWriter, r *http.Request) 
 }
 
 func (*fakeLicenseAPI) entitlements(rw http.ResponseWriter, r *http.Request) {
-	features := make(map[string]codersdk.Feature)
+	features := make(map[codersdk.FeatureName]codersdk.Feature)
 	for _, f := range codersdk.FeatureNames {
 		features[f] = codersdk.Feature{
 			Entitlement: codersdk.EntitlementEntitled,
@@ -346,9 +338,8 @@ func (*fakeLicenseAPI) entitlements(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 	httpapi.Write(r.Context(), rw, http.StatusOK, codersdk.Entitlements{
-		Features:     features,
-		Warnings:     []string{testWarning},
-		HasLicense:   true,
-		Experimental: true,
+		Features:   features,
+		Warnings:   []string{testWarning},
+		HasLicense: true,
 	})
 }

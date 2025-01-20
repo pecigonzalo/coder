@@ -16,16 +16,19 @@ WHERE
 		SELECT
 			id
 		FROM
-			provisioner_jobs AS nested
+			provisioner_jobs AS potential_job
 		WHERE
-			nested.started_at IS NULL
-			AND nested.canceled_at IS NULL
-			AND nested.completed_at IS NULL
-			AND nested.provisioner = ANY(@types :: provisioner_type [ ])
+			potential_job.started_at IS NULL
+			AND potential_job.organization_id = @organization_id
+			-- Ensure the caller has the correct provisioner.
+			AND potential_job.provisioner = ANY(@types :: provisioner_type [ ])
+			-- elsewhere, we use the tagset type, but here we use jsonb for backward compatibility
+			-- they are aliases and the code that calls this query already relies on a different type
+			AND provisioner_tagset_contains(@provisioner_tags :: jsonb, potential_job.tags :: jsonb)
 		ORDER BY
-			nested.created_at FOR
-		UPDATE
-			SKIP LOCKED
+			potential_job.created_at
+		FOR UPDATE
+		SKIP LOCKED
 		LIMIT
 			1
 	) RETURNING *;
@@ -46,6 +49,44 @@ FROM
 WHERE
 	id = ANY(@ids :: uuid [ ]);
 
+-- name: GetProvisionerJobsByIDsWithQueuePosition :many
+WITH pending_jobs AS (
+    SELECT
+        id, created_at
+    FROM
+        provisioner_jobs
+    WHERE
+        started_at IS NULL
+    AND
+        canceled_at IS NULL
+    AND
+        completed_at IS NULL
+    AND
+        error IS NULL
+),
+queue_position AS (
+    SELECT
+        id,
+        ROW_NUMBER() OVER (ORDER BY created_at ASC) AS queue_position
+    FROM
+        pending_jobs
+),
+queue_size AS (
+	SELECT COUNT(*) AS count FROM pending_jobs
+)
+SELECT
+	sqlc.embed(pj),
+    COALESCE(qp.queue_position, 0) AS queue_position,
+    COALESCE(qs.count, 0) AS queue_size
+FROM
+	provisioner_jobs pj
+LEFT JOIN
+	queue_position qp ON qp.id = pj.id
+LEFT JOIN
+	queue_size qs ON TRUE
+WHERE
+	pj.id = ANY(@ids :: uuid [ ]);
+
 -- name: GetProvisionerJobsCreatedAfter :many
 SELECT * FROM provisioner_jobs WHERE created_at > $1;
 
@@ -59,12 +100,14 @@ INSERT INTO
 		initiator_id,
 		provisioner,
 		storage_method,
-		storage_source,
+		file_id,
 		"type",
-		"input"
+		"input",
+		tags,
+		trace_metadata
 	)
 VALUES
-	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *;
+	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *;
 
 -- name: UpdateProvisionerJobByID :exec
 UPDATE
@@ -89,6 +132,34 @@ UPDATE
 SET
 	updated_at = $2,
 	completed_at = $3,
-	error = $4
+	error = $4,
+	error_code = $5
 WHERE
 	id = $1;
+
+-- name: GetHungProvisionerJobs :many
+SELECT
+	*
+FROM
+	provisioner_jobs
+WHERE
+	updated_at < $1
+	AND started_at IS NOT NULL
+	AND completed_at IS NULL;
+
+-- name: InsertProvisionerJobTimings :many
+INSERT INTO provisioner_job_timings (job_id, started_at, ended_at, stage, source, action, resource)
+SELECT
+    @job_id::uuid AS provisioner_job_id,
+    unnest(@started_at::timestamptz[]),
+    unnest(@ended_at::timestamptz[]),
+    unnest(@stage::provisioner_job_timing_stage[]),
+    unnest(@source::text[]),
+    unnest(@action::text[]),
+    unnest(@resource::text[])
+RETURNING *;
+
+-- name: GetProvisionerJobTimingsByJobID :many
+SELECT * FROM provisioner_job_timings
+WHERE job_id = $1
+ORDER BY started_at ASC;

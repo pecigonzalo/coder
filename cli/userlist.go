@@ -2,115 +2,127 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/jedib0t/go-pretty/v6/table"
-	"github.com/spf13/cobra"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/serpent"
 )
 
-func userList() *cobra.Command {
-	var (
-		columns      []string
-		outputFormat string
+func (r *RootCmd) userList() *serpent.Command {
+	formatter := cliui.NewOutputFormatter(
+		cliui.TableFormat([]codersdk.User{}, []string{"username", "email", "created at", "status"}),
+		cliui.JSONFormat(),
 	)
+	client := new(codersdk.Client)
 
-	cmd := &cobra.Command{
+	cmd := &serpent.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := CreateClient(cmd)
+		Middleware: serpent.Chain(
+			serpent.RequireNArgs(0),
+			r.InitClient(client),
+		),
+		Handler: func(inv *serpent.Invocation) error {
+			res, err := client.Users(inv.Context(), codersdk.UsersRequest{})
 			if err != nil {
 				return err
 			}
-			users, err := client.Users(cmd.Context(), codersdk.UsersRequest{})
+
+			out, err := formatter.Format(inv.Context(), res.Users)
 			if err != nil {
 				return err
 			}
 
-			out := ""
-			switch outputFormat {
-			case "table", "":
-				out, err = cliui.DisplayTable(users, "Username", columns)
-				if err != nil {
-					return xerrors.Errorf("render table: %w", err)
-				}
-			case "json":
-				outBytes, err := json.Marshal(users)
-				if err != nil {
-					return xerrors.Errorf("marshal users to JSON: %w", err)
-				}
-
-				out = string(outBytes)
-			default:
-				return xerrors.Errorf(`unknown output format %q, only "table" and "json" are supported`, outputFormat)
-			}
-
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), out)
+			_, err = fmt.Fprintln(inv.Stdout, out)
 			return err
 		},
 	}
 
-	cmd.Flags().StringArrayVarP(&columns, "column", "c", []string{"username", "email", "created_at", "status"},
-		"Specify a column to filter in the table. Available columns are: id, username, email, created_at, status.")
-	cmd.Flags().StringVarP(&outputFormat, "output", "o", "table", "Output format. Available formats are: table, json.")
+	formatter.AttachOptions(&cmd.Options)
 	return cmd
 }
 
-func userSingle() *cobra.Command {
-	var outputFormat string
-	cmd := &cobra.Command{
+func (r *RootCmd) userSingle() *serpent.Command {
+	formatter := cliui.NewOutputFormatter(
+		&userShowFormat{},
+		cliui.JSONFormat(),
+	)
+	client := new(codersdk.Client)
+
+	cmd := &serpent.Command{
 		Use:   "show <username|user_id|'me'>",
 		Short: "Show a single user. Use 'me' to indicate the currently authenticated user.",
-		Example: formatExamples(
-			example{
+		Long: FormatExamples(
+			Example{
 				Command: "coder users show me",
 			},
 		),
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := CreateClient(cmd)
+		Middleware: serpent.Chain(
+			serpent.RequireNArgs(1),
+			r.InitClient(client),
+		),
+		Handler: func(inv *serpent.Invocation) error {
+			user, err := client.User(inv.Context(), inv.Args[0])
 			if err != nil {
 				return err
 			}
 
-			user, err := client.User(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-
-			out := ""
-			switch outputFormat {
-			case "table", "":
-				out = displayUser(cmd.Context(), cmd.ErrOrStderr(), client, user)
-			case "json":
-				outBytes, err := json.Marshal(user)
+			orgNames := make([]string, len(user.OrganizationIDs))
+			for i, orgID := range user.OrganizationIDs {
+				org, err := client.Organization(inv.Context(), orgID)
 				if err != nil {
-					return xerrors.Errorf("marshal user to JSON: %w", err)
+					return xerrors.Errorf("get organization %q: %w", orgID.String(), err)
 				}
 
-				out = string(outBytes)
-			default:
-				return xerrors.Errorf(`unknown output format %q, only "table" and "json" are supported`, outputFormat)
+				orgNames[i] = org.Name
 			}
 
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), out)
+			out, err := formatter.Format(inv.Context(), userWithOrgNames{
+				User:              user,
+				OrganizationNames: orgNames,
+			})
+			if err != nil {
+				return err
+			}
+
+			_, err = fmt.Fprintln(inv.Stdout, out)
 			return err
 		},
 	}
 
-	cmd.Flags().StringVarP(&outputFormat, "output", "o", "table", "Output format. Available formats are: table, json.")
+	formatter.AttachOptions(&cmd.Options)
 	return cmd
 }
 
-func displayUser(ctx context.Context, stderr io.Writer, client *codersdk.Client, user codersdk.User) string {
+type userWithOrgNames struct {
+	codersdk.User
+	OrganizationNames []string `json:"organization_names"`
+}
+
+type userShowFormat struct{}
+
+var _ cliui.OutputFormat = &userShowFormat{}
+
+// ID implements OutputFormat.
+func (*userShowFormat) ID() string {
+	return "table"
+}
+
+// AttachOptions implements OutputFormat.
+func (*userShowFormat) AttachOptions(_ *serpent.OptionSet) {}
+
+// Format implements OutputFormat.
+func (*userShowFormat) Format(_ context.Context, out interface{}) (string, error) {
+	user, ok := out.(userWithOrgNames)
+	if !ok {
+		return "", xerrors.Errorf("expected type %T, got %T", user, out)
+	}
+
 	tw := cliui.Table()
 	addRow := func(name string, value interface{}) {
 		key := ""
@@ -125,6 +137,7 @@ func displayUser(ctx context.Context, stderr io.Writer, client *codersdk.Client,
 	// Add rows for each of the user's fields.
 	addRow("ID", user.ID.String())
 	addRow("Username", user.Username)
+	addRow("Full name", user.Name)
 	addRow("Email", user.Email)
 	addRow("Status", user.Status)
 	addRow("Created At", user.CreatedAt.Format(time.Stamp))
@@ -150,25 +163,18 @@ func displayUser(ctx context.Context, stderr io.Writer, client *codersdk.Client,
 
 	addRow("", "")
 	firstOrg := true
-	for _, orgID := range user.OrganizationIDs {
-		org, err := client.Organization(ctx, orgID)
-		if err != nil {
-			warn := cliui.Styles.Warn.Copy().Align(lipgloss.Left)
-			_, _ = fmt.Fprintf(stderr, warn.Render("Could not fetch organization %s: %+v"), orgID, err)
-			continue
-		}
-
+	for _, orgName := range user.OrganizationNames {
 		key := ""
 		if firstOrg {
 			key = "Organizations"
 			firstOrg = false
 		}
 
-		addRow(key, org.Name)
+		addRow(key, orgName)
 	}
 	if firstOrg {
 		addRow("Organizations", "(none)")
 	}
 
-	return tw.Render()
+	return tw.Render(), nil
 }

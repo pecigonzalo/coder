@@ -1,58 +1,103 @@
-import { ComponentMeta, Story } from "@storybook/react"
+import type { Meta, StoryObj } from "@storybook/react";
 import {
-  MockSiteRoles,
-  MockUser,
-  MockUser2,
-} from "../../testHelpers/renderHelpers"
-import { UsersPageView, UsersPageViewProps } from "./UsersPageView"
+	MockMenu,
+	getDefaultFilterProps,
+} from "components/Filter/storyHelpers";
+import { mockSuccessResult } from "components/PaginationWidget/PaginationContainer.mocks";
+import type { UsePaginatedQueryResult } from "hooks/usePaginatedQuery";
+import type { ComponentProps } from "react";
+import {
+	MockAssignableSiteRoles,
+	MockAuthMethodsPasswordOnly,
+	MockUser,
+	MockUser2,
+	mockApiError,
+} from "testHelpers/entities";
+import { UsersPageView } from "./UsersPageView";
 
-export default {
-  title: "pages/UsersPageView",
-  component: UsersPageView,
-} as ComponentMeta<typeof UsersPageView>
+type FilterProps = ComponentProps<typeof UsersPageView>["filterProps"];
 
-const Template: Story<UsersPageViewProps> = (args) => (
-  <UsersPageView {...args} />
-)
+const defaultFilterProps = getDefaultFilterProps<FilterProps>({
+	query: "owner:me",
+	menus: {
+		status: MockMenu,
+	},
+	values: {
+		status: "active",
+	},
+});
 
-export const Admin = Template.bind({})
-Admin.args = {
-  users: [MockUser, MockUser2],
-  roles: MockSiteRoles,
-  canCreateUser: true,
-  canEditUsers: true,
-}
+const meta: Meta<typeof UsersPageView> = {
+	title: "pages/UsersPageView",
+	component: UsersPageView,
+	args: {
+		isNonInitialPage: false,
+		users: [MockUser, MockUser2],
+		roles: MockAssignableSiteRoles,
+		canEditUsers: true,
+		filterProps: defaultFilterProps,
+		authMethods: MockAuthMethodsPasswordOnly,
+		usersQuery: {
+			...mockSuccessResult,
+			totalRecords: 2,
+		} as UsePaginatedQueryResult,
+	},
+};
 
-export const SmallViewport = Template.bind({})
-SmallViewport.args = {
-  ...Admin.args,
-}
-SmallViewport.parameters = {
-  chromatic: { viewports: [600] },
-}
+export default meta;
+type Story = StoryObj<typeof UsersPageView>;
 
-export const Member = Template.bind({})
-Member.args = { ...Admin.args, canCreateUser: false, canEditUsers: false }
+export const Admin: Story = {};
 
-export const Empty = Template.bind({})
-Empty.args = { ...Admin.args, users: [] }
+export const SmallViewport: Story = {
+	parameters: {
+		chromatic: { viewports: [600] },
+	},
+};
 
-export const Error = Template.bind({})
-Error.args = {
-  ...Admin.args,
-  users: undefined,
-  error: {
-    response: {
-      data: {
-        message: "Invalid user search query.",
-        validations: [
-          {
-            field: "status",
-            detail: `Query param "status" has invalid value: "inactive" is not a valid user status`,
-          },
-        ],
-      },
-    },
-    isAxiosError: true,
-  },
-}
+export const Member: Story = {
+	args: { canEditUsers: false },
+};
+
+export const Empty: Story = {
+	args: {
+		users: [],
+		usersQuery: {
+			...mockSuccessResult,
+			totalRecords: 0,
+		} as UsePaginatedQueryResult,
+	},
+};
+
+export const EmptyPage: Story = {
+	args: {
+		users: [],
+		isNonInitialPage: true,
+		usersQuery: {
+			...mockSuccessResult,
+			totalRecords: 0,
+		} as UsePaginatedQueryResult,
+	},
+};
+
+export const WithError: Story = {
+	args: {
+		users: undefined,
+		usersQuery: {
+			...mockSuccessResult,
+			totalRecords: 0,
+		} as UsePaginatedQueryResult,
+		filterProps: {
+			...defaultFilterProps,
+			error: mockApiError({
+				message: "Invalid user search query.",
+				validations: [
+					{
+						field: "status",
+						detail: `Query param "status" has invalid value: "inactive" is not a valid user status`,
+					},
+				],
+			}),
+		},
+	},
+};

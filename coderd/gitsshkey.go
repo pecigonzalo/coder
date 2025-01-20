@@ -3,22 +3,45 @@ package coderd
 import (
 	"net/http"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/gitsshkey"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/audit"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/gitsshkey"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/agentsdk"
 )
 
+// @Summary Regenerate user SSH key
+// @ID regenerate-user-ssh-key
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Success 200 {object} codersdk.GitSSHKey
+// @Router /users/{user}/gitsshkey [put]
 func (api *API) regenerateGitSSHKey(rw http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	user := httpmw.UserParam(r)
+	var (
+		ctx               = r.Context()
+		user              = httpmw.UserParam(r)
+		auditor           = api.Auditor.Load()
+		aReq, commitAudit = audit.InitRequest[database.GitSSHKey](rw, &audit.RequestParams{
+			Audit:   *auditor,
+			Log:     api.Logger,
+			Request: r,
+			Action:  database.AuditActionWrite,
+		})
+	)
+	defer commitAudit()
 
-	if !api.Authorize(r, rbac.ActionUpdate, rbac.ResourceUserData.WithOwner(user.ID.String())) {
-		httpapi.ResourceNotFound(rw)
+	oldKey, err := api.Database.GetGitSSHKey(ctx, user.ID)
+	if err != nil {
+		httpapi.InternalServerError(rw, err)
 		return
 	}
+
+	aReq.Old = oldKey
 
 	privateKey, publicKey, err := gitsshkey.Generate(api.SSHKeygenAlgorithm)
 	if err != nil {
@@ -29,9 +52,9 @@ func (api *API) regenerateGitSSHKey(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = api.Database.UpdateGitSSHKey(ctx, database.UpdateGitSSHKeyParams{
+	newKey, err := api.Database.UpdateGitSSHKey(ctx, database.UpdateGitSSHKeyParams{
 		UserID:     user.ID,
-		UpdatedAt:  database.Now(),
+		UpdatedAt:  dbtime.Now(),
 		PrivateKey: privateKey,
 		PublicKey:  publicKey,
 	})
@@ -43,14 +66,7 @@ func (api *API) regenerateGitSSHKey(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newKey, err := api.Database.GetGitSSHKey(ctx, user.ID)
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error fetching user's git SSH key.",
-			Detail:  err.Error(),
-		})
-		return
-	}
+	aReq.New = newKey
 
 	httpapi.Write(ctx, rw, http.StatusOK, codersdk.GitSSHKey{
 		UserID:    newKey.UserID,
@@ -61,14 +77,17 @@ func (api *API) regenerateGitSSHKey(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// @Summary Get user Git SSH key
+// @ID get-user-git-ssh-key
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Success 200 {object} codersdk.GitSSHKey
+// @Router /users/{user}/gitsshkey [get]
 func (api *API) gitSSHKey(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := httpmw.UserParam(r)
-
-	if !api.Authorize(r, rbac.ActionRead, rbac.ResourceUserData.WithOwner(user.ID.String())) {
-		httpapi.ResourceNotFound(rw)
-		return
-	}
 
 	gitSSHKey, err := api.Database.GetGitSSHKey(ctx, user.ID)
 	if err != nil {
@@ -88,6 +107,13 @@ func (api *API) gitSSHKey(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// @Summary Get workspace agent Git SSH key
+// @ID get-workspace-agent-git-ssh-key
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Agents
+// @Success 200 {object} agentsdk.GitSSHKey
+// @Router /workspaceagents/me/gitsshkey [get]
 func (api *API) agentGitSSHKey(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	agent := httpmw.WorkspaceAgent(r)
@@ -127,7 +153,7 @@ func (api *API) agentGitSSHKey(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpapi.Write(ctx, rw, http.StatusOK, codersdk.AgentGitSSHKey{
+	httpapi.Write(ctx, rw, http.StatusOK, agentsdk.GitSSHKey{
 		PublicKey:  gitSSHKey.PublicKey,
 		PrivateKey: gitSSHKey.PrivateKey,
 	})

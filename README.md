@@ -1,102 +1,132 @@
-# Coder
+<!-- markdownlint-disable MD041 -->
+<div align="center">
+  <a href="https://coder.com#gh-light-mode-only">
+    <img src="./docs/images/logo-black.png" alt="Coder Logo Light" style="width: 128px">
+  </a>
+  <a href="https://coder.com#gh-dark-mode-only">
+    <img src="./docs/images/logo-white.png" alt="Coder Logo Dark" style="width: 128px">
+  </a>
 
-[!["Join us on
-Discord"](https://img.shields.io/badge/join-us%20on%20Discord-gray.svg?longCache=true&logo=discord&colorB=green)](https://coder.com/chat?utm_source=github.com/coder/coder&utm_medium=github&utm_campaign=readme.md)
-[![codecov](https://codecov.io/gh/coder/coder/branch/main/graph/badge.svg?token=TNLW3OAP6G)](https://codecov.io/gh/coder/coder)
-[![Go Reference](https://pkg.go.dev/badge/github.com/coder/coder.svg)](https://pkg.go.dev/github.com/coder/coder)
-[![Twitter
-Follow](https://img.shields.io/twitter/follow/coderhq?label=%40coderhq&style=social)](https://twitter.com/coderhq)
+  <h1>
+  Self-Hosted Cloud Development Environments
+  </h1>
 
-Coder creates remote development machines so your team can develop from anywhere.
+  <a href="https://coder.com#gh-light-mode-only">
+    <img src="./docs/images/banner-black.png" alt="Coder Banner Light" style="width: 650px">
+  </a>
+  <a href="https://coder.com#gh-dark-mode-only">
+    <img src="./docs/images/banner-white.png" alt="Coder Banner Dark" style="width: 650px">
+  </a>
+
+  <br>
+  <br>
+
+[Quickstart](#quickstart) | [Docs](https://coder.com/docs) | [Why Coder](https://coder.com/why) | [Premium](https://coder.com/pricing#compare-plans)
+
+[![discord](https://img.shields.io/discord/747933592273027093?label=discord)](https://discord.gg/coder)
+[![release](https://img.shields.io/github/v/release/coder/coder)](https://github.com/coder/coder/releases/latest)
+[![godoc](https://pkg.go.dev/badge/github.com/coder/coder.svg)](https://pkg.go.dev/github.com/coder/coder)
+[![Go Report Card](https://goreportcard.com/badge/github.com/coder/coder/v2)](https://goreportcard.com/report/github.com/coder/coder/v2)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/9511/badge)](https://www.bestpractices.dev/projects/9511)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coder/coder/badge)](https://scorecard.dev/viewer/?uri=github.com%2Fcoder%2Fcoder)
+[![license](https://img.shields.io/github/license/coder/coder)](./LICENSE)
+
+</div>
+
+[Coder](https://coder.com) enables organizations to set up development environments in their public or private cloud infrastructure. Cloud development environments are defined with Terraform, connected through a secure high-speed Wireguard® tunnel, and automatically shut down when not used to save on costs. Coder gives engineering teams the flexibility to use the cloud for workloads most beneficial to them.
+
+- Define cloud development environments in Terraform
+  - EC2 VMs, Kubernetes Pods, Docker Containers, etc.
+- Automatically shutdown idle resources to save on costs
+- Onboard developers in seconds instead of days
 
 <p align="center">
-  <img src="./docs/images/hero-image.png">
+  <img src="./docs/images/hero-image.png" alt="Coder Hero Image">
 </p>
 
-**Manage less**
+## Quickstart
 
-- Ensure your entire team is using the same tools and resources
-  - Rollout critical updates to your developers with one command
-- Automatically shut down expensive cloud resources
-- Keep your source code and data behind your firewall
+The most convenient way to try Coder is to install it on your local machine and experiment with provisioning cloud development environments using Docker (works on Linux, macOS, and Windows).
 
-**Code more**
+```shell
+# First, install Coder
+curl -L https://coder.com/install.sh | sh
 
-- Build and test faster
-  - Leveraging cloud CPUs, RAM, network speeds, etc.
-- Access your environment from any place on any client (even an iPad)
-- Onboard instantly then stay up to date continuously
+# Start the Coder server (caches data in ~/.cache/coder)
+coder server
 
-## Getting Started
+# Navigate to http://localhost:3000 to create your initial user,
+# create a Docker template and provision a workspace
+```
 
-> **Note**:
-> Coder is in a beta state. [Report issues here](https://github.com/coder/coder/issues/new).
+## Install
 
-The easiest way to install Coder is to use our [install script](https://github.com/coder/coder/blob/main/install.sh) for Linux and macOS.
+The easiest way to install Coder is to use our
+[install script](https://github.com/coder/coder/blob/main/install.sh) for Linux
+and macOS. For Windows, use the latest `..._installer.exe` file from GitHub
+Releases.
 
-To install, run:
-
-```bash
+```shell
 curl -L https://coder.com/install.sh | sh
 ```
 
-You can preview what occurs during the install process:
+You can run the install script with `--dry-run` to see the commands that will be used to install without executing them. Run the install script with `--help` for additional flags.
 
-```bash
-curl -L https://coder.com/install.sh | sh -s -- --dry-run
-```
+> See [install](https://coder.com/docs/install) for additional methods.
 
-You can modify the installation process by including flags. Run the help command for reference:
+Once installed, you can start a production deployment with a single command:
 
-```bash
-curl -L https://coder.com/install.sh | sh -s -- --help
-```
-
-> See [install](docs/install) for additional methods.
-
-Once installed, you can start a production deployment<sup>1</sup> with a single command:
-
-```sh
+```shell
 # Automatically sets up an external access URL on *.try.coder.app
 coder server
 
-# Requires a PostgreSQL instance and external access URL
+# Requires a PostgreSQL instance (version 13 or higher) and external access URL
 coder server --postgres-url <url> --access-url <url>
 ```
 
-> <sup>1</sup> The embedded database is great for trying out Coder with small deployments, but do consider using an external database for increased assurance and control.
-
-Use `coder --help` to get a complete list of flags and environment variables. Use our [quickstart guide](https://coder.com/docs/coder-oss/latest/quickstart) for a full walkthrough.
+Use `coder --help` to get a list of flags and environment variables. Use our [install guides](https://coder.com/docs/install) for a complete walkthrough.
 
 ## Documentation
 
-Visit our docs [here](https://coder.com/docs/coder-oss).
+Browse our docs [here](https://coder.com/docs) or visit a specific section below:
 
-## Comparison
+- [**Templates**](https://coder.com/docs/templates): Templates are written in Terraform and describe the infrastructure for workspaces
+- [**Workspaces**](https://coder.com/docs/workspaces): Workspaces contain the IDEs, dependencies, and configuration information needed for software development
+- [**IDEs**](https://coder.com/docs/ides): Connect your existing editor to a workspace
+- [**Administration**](https://coder.com/docs/admin): Learn how to operate Coder
+- [**Premium**](https://coder.com/pricing#compare-plans): Learn about our paid features built for large teams
 
-Please file [an issue](https://github.com/coder/coder/issues/new) if any information is out of date. Also refer to: [What Coder is not](https://coder.com/docs/coder-oss/latest/index#what-coder-is-not).
+## Support
 
-| Tool                                                        | Type     | Delivery Model     | Cost                          | Environments                                                                                                                                               |
-| :---------------------------------------------------------- | :------- | :----------------- | :---------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Coder](https://github.com/coder/coder)                     | Platform | OSS + Self-Managed | Pay your cloud                | All [Terraform](https://www.terraform.io/registry/providers) resources, all clouds, multi-architecture: Linux, Mac, Windows, containers, VMs, amd64, arm64 |
-| [code-server](https://github.com/cdr/code-server)           | Web IDE  | OSS + Self-Managed | Pay your cloud                | Linux, Mac, Windows, containers, VMs, amd64, arm64                                                                                                         |
-| [Coder (Classic)](https://coder.com/docs)                   | Platform | Self-Managed       | Pay your cloud + license fees | Kubernetes Linux Containers                                                                                                                                |
-| [GitHub Codespaces](https://github.com/features/codespaces) | Platform | SaaS               | 2x Azure Compute              | Linux containers                                                                                                                                           |
+Feel free to [open an issue](https://github.com/coder/coder/issues/new) if you have questions, run into bugs, or have a feature request.
 
----
+[Join our Discord](https://discord.gg/coder) to provide feedback on in-progress features and chat with the community using Coder!
 
-_Last updated: 5/27/22_
+## Integrations
 
-## Community and Support
+We are always working on new integrations. Please feel free to open an issue and ask for an integration. Contributions are welcome in any official or community repositories.
 
-Join our community on [Discord](https://coder.com/chat?utm_source=github.com/coder/coder&utm_medium=github&utm_campaign=readme.md) and [Twitter](https://twitter.com/coderhq)!
+### Official
 
-[Suggest improvements and report problems](https://github.com/coder/coder/issues/new/choose)
+- [**VS Code Extension**](https://marketplace.visualstudio.com/items?itemName=coder.coder-remote): Open any Coder workspace in VS Code with a single click
+- [**JetBrains Gateway Extension**](https://plugins.jetbrains.com/plugin/19620-coder): Open any Coder workspace in JetBrains Gateway with a single click
+- [**Dev Container Builder**](https://github.com/coder/envbuilder): Build development environments using `devcontainer.json` on Docker, Kubernetes, and OpenShift
+- [**Module Registry**](https://registry.coder.com): Extend development environments with common use-cases
+- [**Kubernetes Log Stream**](https://github.com/coder/coder-logstream-kube): Stream Kubernetes Pod events to the Coder startup logs
+- [**Self-Hosted VS Code Extension Marketplace**](https://github.com/coder/code-marketplace): A private extension marketplace that works in restricted or airgapped networks integrating with [code-server](https://github.com/coder/code-server).
+- [**Setup Coder**](https://github.com/marketplace/actions/setup-coder): An action to setup coder CLI in GitHub workflows.
+
+### Community
+
+- [**Provision Coder with Terraform**](https://github.com/ElliotG/coder-oss-tf): Provision Coder on Google GKE, Azure AKS, AWS EKS, DigitalOcean DOKS, IBMCloud K8s, OVHCloud K8s, and Scaleway K8s Kapsule with Terraform
+- [**Coder Template GitHub Action**](https://github.com/marketplace/actions/update-coder-template): A GitHub Action that updates Coder templates
 
 ## Contributing
 
-If you're using Coder in your organization, please try to add your company name to the [ADOPTERS.md](./ADOPTERS.md). It really helps the project to gain momentum and credibility. It's a small contribution back to the project with a big impact. 
+We are always happy to see new contributors to Coder. If you are new to the Coder codebase, we have
+[a guide on how to get started](https://coder.com/docs/CONTRIBUTING). We'd love to see your
+contributions!
 
-Read the [contributing docs](https://coder.com/docs/coder-oss/latest/CONTRIBUTING).
+## Hiring
 
-Find our list of contributors [here](https://github.com/coder/coder/graphs/contributors).
+Apply [here](https://jobs.ashbyhq.com/coder?utm_source=github&utm_medium=readme&utm_campaign=unknown) if you're interested in joining our team.

@@ -1,28 +1,25 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"math/rand"
 	"os"
-	"time"
 	_ "time/tzdata"
 
-	"github.com/coder/coder/cli"
-	"github.com/coder/coder/cli/cliui"
-	entcli "github.com/coder/coder/enterprise/cli"
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/coder/coder/v2/agent/agentexec"
+	entcli "github.com/coder/coder/v2/enterprise/cli"
 )
 
 func main() {
-	rand.Seed(time.Now().UnixMicro())
-
-	cmd, err := cli.Root(entcli.EnterpriseSubcommands()).ExecuteC()
-	if err != nil {
-		if errors.Is(err, cliui.Canceled) {
-			os.Exit(1)
-		}
-		cobraErr := cli.FormatCobraError(err, cmd)
-		_, _ = fmt.Fprintln(os.Stderr, cobraErr)
+	if len(os.Args) > 1 && os.Args[1] == "agent-exec" {
+		err := agentexec.CLI()
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	// This preserves backwards compatibility with an init function that is causing grief for
+	// web terminals using agent-exec + screen. See https://github.com/coder/coder/pull/15817
+	tea.InitTerminal()
+	var rootCmd entcli.RootCmd
+	rootCmd.RunWithSubcommands(rootCmd.EnterpriseSubcommands())
 }

@@ -4,6 +4,8 @@ import (
 	_ "embed"
 	"fmt"
 	"strings"
+
+	"github.com/coder/coder/v2/provisionersdk/proto"
 )
 
 var (
@@ -37,9 +39,9 @@ var (
 	}
 )
 
-// AgentScriptEnv returns a key-pair of scripts that are consumed
-// by the Coder Terraform Provider. See:
-// https://github.com/coder/terraform-provider-coder/blob/main/internal/provider/provider.go#L97
+// AgentScriptEnv returns a key-pair of scripts that are consumed by the Coder Terraform Provider.
+// https://github.com/coder/terraform-provider-coder/blob/main/provider/agent.go (updateInitScript)
+// performs additional string substitutions.
 func AgentScriptEnv() map[string]string {
 	env := map[string]string{}
 	for operatingSystem, scripts := range agentScripts {
@@ -49,4 +51,16 @@ func AgentScriptEnv() map[string]string {
 		}
 	}
 	return env
+}
+
+// DefaultDisplayApps returns the default display applications to enable
+// if none are specified in a template.
+func DefaultDisplayApps() *proto.DisplayApps {
+	return &proto.DisplayApps{
+		Vscode:               true,
+		VscodeInsiders:       false,
+		WebTerminal:          true,
+		PortForwardingHelper: true,
+		SshHelper:            true,
+	}
 }

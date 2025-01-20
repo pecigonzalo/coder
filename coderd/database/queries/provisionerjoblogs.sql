@@ -1,4 +1,4 @@
--- name: GetProvisionerLogsByIDBetween :many
+-- name: GetProvisionerLogsAfterID :many
 SELECT
 	*
 FROM
@@ -6,17 +6,13 @@ FROM
 WHERE
 	job_id = @job_id
 	AND (
-		created_at >= @created_after
-		OR created_at <= @created_before
-	)
-ORDER BY
-	created_at DESC;
+		id > @created_after
+	) ORDER BY id ASC;
 
 -- name: InsertProvisionerJobLogs :many
 INSERT INTO
 	provisioner_job_logs
 SELECT
-	unnest(@id :: uuid [ ]) AS id,
 	@job_id :: uuid AS job_id,
 	unnest(@created_at :: timestamptz [ ]) AS created_at,
 	unnest(@source :: log_source [ ]) AS source,

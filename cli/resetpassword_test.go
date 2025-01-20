@@ -9,16 +9,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/cli/clitest"
-	"github.com/coder/coder/coderd/database/postgres"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/pty/ptytest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/cli/clitest"
+	"github.com/coder/coder/v2/coderd/database/dbtestutil"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
 )
 
 // nolint:paralleltest
 func TestResetPassword(t *testing.T) {
-	// postgres.Open() seems to be creating race conditions when run in parallel.
+	// dbtestutil.Open() seems to be creating race conditions when run in parallel.
 	// t.Parallel()
 
 	if runtime.GOOS != "linux" || testing.Short() {
@@ -28,26 +28,24 @@ func TestResetPassword(t *testing.T) {
 
 	const email = "some@one.com"
 	const username = "example"
-	const oldPassword = "password"
-	const newPassword = "password2"
+	const oldPassword = "MyOldPassword!"
+	const newPassword = "MyNewPassword!"
 
 	// start postgres and coder server processes
-
-	connectionURL, closeFunc, err := postgres.Open()
+	connectionURL, err := dbtestutil.Open(t)
 	require.NoError(t, err)
-	defer closeFunc()
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	serverDone := make(chan struct{})
-	serverCmd, cfg := clitest.New(t,
+	serverinv, cfg := clitest.New(t,
 		"server",
-		"--address", ":0",
-		"--access-url", "example.com",
+		"--http-address", ":0",
+		"--access-url", "http://example.com",
 		"--postgres-url", connectionURL,
 		"--cache-dir", t.TempDir(),
 	)
 	go func() {
 		defer close(serverDone)
-		err = serverCmd.ExecuteContext(ctx)
+		err = serverinv.WithContext(ctx).Run()
 		assert.NoError(t, err)
 	}()
 	var rawURL string
@@ -60,24 +58,23 @@ func TestResetPassword(t *testing.T) {
 	client := codersdk.New(accessURL)
 
 	_, err = client.CreateFirstUser(ctx, codersdk.CreateFirstUserRequest{
-		Email:            email,
-		Username:         username,
-		Password:         oldPassword,
-		OrganizationName: "example",
+		Email:    email,
+		Username: username,
+		Password: oldPassword,
 	})
 	require.NoError(t, err)
 
 	// reset the password
 
-	resetCmd, cmdCfg := clitest.New(t, "reset-password", "--postgres-url", connectionURL, username)
+	resetinv, cmdCfg := clitest.New(t, "reset-password", "--postgres-url", connectionURL, username)
 	clitest.SetupConfig(t, client, cmdCfg)
 	cmdDone := make(chan struct{})
 	pty := ptytest.New(t)
-	resetCmd.SetIn(pty.Input())
-	resetCmd.SetOut(pty.Output())
+	resetinv.Stdin = pty.Input()
+	resetinv.Stdout = pty.Output()
 	go func() {
 		defer close(cmdDone)
-		err = resetCmd.Execute()
+		err = resetinv.Run()
 		assert.NoError(t, err)
 	}()
 

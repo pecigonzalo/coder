@@ -1,0 +1,22 @@
+# Filtering pull requests is much easier when we can reliably guarantee
+# that the "Assignee" field is populated.
+name: PR Auto Assign
+
+on:
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  assign-author:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@0080882f6c36860b6ba35c610c98ce87d4e2f26f # v2.10.2
+        with:
+          egress-policy: audit
+
+      - name: Assign author
+        uses: toshimaru/auto-author-assign@16f0022cf3d7970c106d8d1105f75a1165edb516 # v2.1.1

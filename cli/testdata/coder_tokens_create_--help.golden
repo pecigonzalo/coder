@@ -1,0 +1,20 @@
+coder v0.0.0-devel
+
+USAGE:
+  coder tokens create [flags]
+
+  Create a token
+
+OPTIONS:
+      --lifetime string, $CODER_TOKEN_LIFETIME
+          Specify a duration for the lifetime of the token.
+
+  -n, --name string, $CODER_TOKEN_NAME
+          Specify a human-readable name.
+
+  -u, --user string, $CODER_TOKEN_USER
+          Specify the user to create the token for (Only works if logged in user
+          is admin).
+
+———
+Run `coder --help` for a list of global options.

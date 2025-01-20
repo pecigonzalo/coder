@@ -1,36 +1,48 @@
-import { ComponentMeta, Story } from "@storybook/react"
-import { DeleteDialog, DeleteDialogProps } from "./DeleteDialog"
+import { action } from "@storybook/addon-actions";
+import type { Meta, StoryObj } from "@storybook/react";
+import { userEvent } from "@storybook/test";
+import { within } from "@testing-library/react";
+import { DeleteDialog } from "./DeleteDialog";
 
-export default {
-  title: "Components/Dialogs/DeleteDialog",
-  component: DeleteDialog,
-  argTypes: {
-    onCancel: {
-      action: "onClose",
-    },
-    onConfirm: {
-      action: "onConfirm",
-    },
-    open: {
-      control: "boolean",
-      defaultValue: true,
-    },
-    entity: {
-      defaultValue: "foo",
-    },
-    name: {
-      defaultValue: "MyFoo",
-    },
-    info: {
-      defaultValue:
-        "Here's some info about the foo so you know you're deleting the right one.",
-    },
-  },
-} as ComponentMeta<typeof DeleteDialog>
+const meta: Meta<typeof DeleteDialog> = {
+	title: "components/Dialogs/DeleteDialog",
+	component: DeleteDialog,
+	args: {
+		onCancel: action("onClose"),
+		onConfirm: action("onConfirm"),
+		isOpen: true,
+		entity: "foo",
+		name: "MyFoo",
+		info: "Here's some info about the foo so you know you're deleting the right one.",
+	},
+};
 
-const Template: Story<DeleteDialogProps> = (args) => <DeleteDialog {...args} />
+export default meta;
 
-export const Example = Template.bind({})
-Example.args = {
-  isOpen: true,
-}
+type Story = StoryObj<typeof DeleteDialog>;
+
+export const Idle: Story = {};
+
+export const FilledSuccessfully: Story = {
+	play: async ({ canvasElement }) => {
+		const user = userEvent.setup();
+		const body = within(canvasElement.ownerDocument.body);
+		const input = await body.findByLabelText("Name of the foo to delete");
+		await user.type(input, "MyFoo");
+	},
+};
+
+export const FilledWrong: Story = {
+	play: async ({ canvasElement }) => {
+		const user = userEvent.setup();
+		const body = within(canvasElement.ownerDocument.body);
+		const input = await body.findByLabelText("Name of the foo to delete");
+		await user.type(input, "InvalidFooName");
+	},
+};
+
+export const Loading: Story = {
+	args: {
+		confirmLoading: true,
+	},
+};

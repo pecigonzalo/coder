@@ -1,42 +1,48 @@
-import { useActor } from "@xstate/react"
-import React, { useContext } from "react"
-import { Section } from "../../../components/Section/Section"
-import { AccountForm } from "../../../components/SettingsAccountForm/SettingsAccountForm"
-import { XServiceContext } from "../../../xServices/StateContext"
+import { groupsForUser } from "api/queries/groups";
+import { Stack } from "components/Stack/Stack";
+import { useAuthContext } from "contexts/auth/AuthProvider";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
+import { useDashboard } from "modules/dashboard/useDashboard";
+import type { FC } from "react";
+import { useQuery } from "react-query";
+import { Section } from "../Section";
+import { AccountForm } from "./AccountForm";
+import { AccountUserGroups } from "./AccountUserGroups";
 
-export const Language = {
-  title: "Account",
-}
+export const AccountPage: FC = () => {
+	const { permissions, user: me } = useAuthenticated();
+	const { updateProfile, updateProfileError, isUpdatingProfile } =
+		useAuthContext();
+	const { entitlements } = useDashboard();
 
-export const AccountPage: React.FC = () => {
-  const xServices = useContext(XServiceContext)
-  const [authState, authSend] = useActor(xServices.authXService)
-  const { me, permissions, updateProfileError } = authState.context
-  const canEditUsers = permissions && permissions.updateUsers
+	const hasGroupsFeature = entitlements.features.user_role_management.enabled;
+	const groupsQuery = useQuery({
+		...groupsForUser(me.id),
+		enabled: hasGroupsFeature,
+	});
 
-  if (!me) {
-    throw new Error("No current user found")
-  }
+	return (
+		<Stack spacing={6}>
+			<Section title="Account" description="Update your account info">
+				<AccountForm
+					editable={permissions?.updateUsers ?? false}
+					email={me.email}
+					updateProfileError={updateProfileError}
+					isLoading={isUpdatingProfile}
+					initialValues={{ username: me.username, name: me.name }}
+					onSubmit={updateProfile}
+				/>
+			</Section>
 
-  return (
-    <Section title={Language.title}>
-      <AccountForm
-        editable={Boolean(canEditUsers)}
-        email={me.email}
-        updateProfileError={updateProfileError}
-        isLoading={authState.matches("signedIn.profile.updatingProfile")}
-        initialValues={{
-          username: me.username,
-        }}
-        onSubmit={(data) => {
-          authSend({
-            type: "UPDATE_PROFILE",
-            data,
-          })
-        }}
-      />
-    </Section>
-  )
-}
+			{hasGroupsFeature && (
+				<AccountUserGroups
+					groups={groupsQuery.data}
+					loading={groupsQuery.isLoading}
+					error={groupsQuery.error}
+				/>
+			)}
+		</Stack>
+	);
+};
 
-export default AccountPage
+export default AccountPage;

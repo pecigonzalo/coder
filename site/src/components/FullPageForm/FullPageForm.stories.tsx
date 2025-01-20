@@ -1,34 +1,43 @@
-import TextField from "@material-ui/core/TextField"
-import { action } from "@storybook/addon-actions"
-import { ComponentMeta, Story } from "@storybook/react"
-import { FormFooter } from "../FormFooter/FormFooter"
-import { Stack } from "../Stack/Stack"
-import { FullPageForm, FullPageFormProps } from "./FullPageForm"
+import TextField from "@mui/material/TextField";
+import type { Meta, StoryObj } from "@storybook/react";
+import { Button } from "components/Button/Button";
+import { FormFooter } from "components/Form/Form";
+import type { FC } from "react";
+import { Stack } from "../Stack/Stack";
+import { FullPageForm, type FullPageFormProps } from "./FullPageForm";
 
-export default {
-  title: "components/FullPageForm",
-  component: FullPageForm,
-} as ComponentMeta<typeof FullPageForm>
+const Template: FC<FullPageFormProps> = (props) => (
+	<FullPageForm {...props}>
+		<form
+			onSubmit={(e) => {
+				e.preventDefault();
+			}}
+		>
+			<Stack>
+				<TextField fullWidth label="Field 1" name="field1" />
+				<TextField fullWidth label="Field 2" name="field2" />
+				<FormFooter>
+					<Button variant="outline">Cancel</Button>
+					<Button type="submit">Save</Button>
+				</FormFooter>
+			</Stack>
+		</form>
+	</FullPageForm>
+);
 
-const Template: Story<FullPageFormProps> = (args) => (
-  <FullPageForm {...args}>
-    <form
-      onSubmit={(e) => {
-        e.preventDefault()
-      }}
-    >
-      <Stack>
-        <TextField fullWidth variant="outlined" label="Field 1" name="field1" />
-        <TextField fullWidth variant="outlined" label="Field 2" name="field2" />
-        <FormFooter isLoading={false} onCancel={action("cancel")} />
-      </Stack>
-    </form>
-  </FullPageForm>
-)
+const meta: Meta<typeof FullPageForm> = {
+	title: "components/FullPageForm",
+	component: Template,
+};
 
-export const Example = Template.bind({})
-Example.args = {
-  title: "My Form",
-  detail: "Lorem ipsum dolor",
-  onCancel: action("cancel"),
-}
+export default meta;
+type Story = StoryObj<typeof FullPageForm>;
+
+const Example: Story = {
+	args: {
+		title: "My Form",
+		detail: "Lorem ipsum dolor",
+	},
+};
+
+export { Example as FullPageForm };

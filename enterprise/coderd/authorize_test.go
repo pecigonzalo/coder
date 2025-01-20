@@ -7,11 +7,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/enterprise/coderd/coderdenttest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/enterprise/coderd/coderdenttest"
+	"github.com/coder/coder/v2/enterprise/coderd/license"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestCheckACLPermissions(t *testing.T) {
@@ -20,26 +21,26 @@ func TestCheckACLPermissions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 	t.Cleanup(cancel)
 
-	adminClient := coderdenttest.New(t, &coderdenttest.Options{
+	adminClient, adminUser := coderdenttest.New(t, &coderdenttest.Options{
 		Options: &coderdtest.Options{
 			IncludeProvisionerDaemon: true,
 		},
+		LicenseOptions: &coderdenttest.LicenseOptions{
+			Features: license.Features{
+				codersdk.FeatureTemplateRBAC: 1,
+			},
+		},
 	})
-	// Create adminClient, member, and org adminClient
-	adminUser := coderdtest.CreateFirstUser(t, adminClient)
-	_ = coderdenttest.AddLicense(t, adminClient, coderdenttest.LicenseOptions{
-		RBACEnabled: true,
-	})
-
-	memberClient := coderdtest.CreateAnotherUser(t, adminClient, adminUser.OrganizationID)
+	// Create member and org adminClient
+	memberClient, _ := coderdtest.CreateAnotherUser(t, adminClient, adminUser.OrganizationID)
 	memberUser, err := memberClient.User(ctx, codersdk.Me)
 	require.NoError(t, err)
-	orgAdminClient := coderdtest.CreateAnotherUser(t, adminClient, adminUser.OrganizationID, rbac.RoleOrgAdmin(adminUser.OrganizationID))
+	orgAdminClient, _ := coderdtest.CreateAnotherUser(t, adminClient, adminUser.OrganizationID, rbac.ScopedRoleOrgAdmin(adminUser.OrganizationID))
 	orgAdminUser, err := orgAdminClient.User(ctx, codersdk.Me)
 	require.NoError(t, err)
 
 	version := coderdtest.CreateTemplateVersion(t, adminClient, adminUser.OrganizationID, nil)
-	coderdtest.AwaitTemplateVersionJob(t, adminClient, version.ID)
+	coderdtest.AwaitTemplateVersionJobCompleted(t, adminClient, version.ID)
 	template := coderdtest.CreateTemplate(t, adminClient, adminUser.OrganizationID, version.ID)
 
 	err = adminClient.UpdateTemplateACL(ctx, template.ID, codersdk.UpdateTemplateACL{
@@ -55,10 +56,10 @@ func TestCheckACLPermissions(t *testing.T) {
 	params := map[string]codersdk.AuthorizationCheck{
 		updateSpecificTemplate: {
 			Object: codersdk.AuthorizationObject{
-				ResourceType: rbac.ResourceTemplate.Type,
+				ResourceType: codersdk.ResourceTemplate,
 				ResourceID:   template.ID.String(),
 			},
-			Action: "write",
+			Action: codersdk.ActionUpdate,
 		},
 	}
 
@@ -103,7 +104,7 @@ func TestCheckACLPermissions(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 			t.Cleanup(cancel)
 
-			resp, err := c.Client.CheckAuthorization(ctx, codersdk.AuthorizationRequest{Checks: params})
+			resp, err := c.Client.AuthCheck(ctx, codersdk.AuthorizationRequest{Checks: params})
 			require.NoError(t, err, "check perms")
 			require.Equal(t, c.Check, resp)
 		})

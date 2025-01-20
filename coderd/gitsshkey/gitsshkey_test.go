@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/coder/coder/coderd/gitsshkey"
-	"github.com/coder/coder/cryptorand"
+	"github.com/coder/coder/v2/coderd/gitsshkey"
+	"github.com/coder/coder/v2/cryptorand"
 )
 
 func TestGitSSHKeys(t *testing.T) {
@@ -54,4 +54,15 @@ func TestGitSSHKeys(t *testing.T) {
 		_, err = gitsshkey.ParseAlgorithm("")
 		require.Error(t, err, "empty string should fail")
 	})
+}
+
+func BenchmarkGenerate(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		// Note that this is using dumbRand under the hood, so it will be
+		// a lot slower in production.
+		_, _, err := gitsshkey.Generate(gitsshkey.AlgorithmRSA4096)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
 }

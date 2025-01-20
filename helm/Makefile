@@ -13,6 +13,15 @@ all: lint
 lint: lint/helm
 .PHONY: lint
 
-lint/helm:
-	helm lint --strict .
+lint/helm: lint/helm/coder lint/helm/provisioner
 .PHONY: lint/helm
+
+lint/helm/coder:
+	helm dependency update --skip-refresh coder/
+	helm lint --strict --set coder.image.tag=v0.0.1 coder/
+.PHONY: lint/helm/coder
+
+lint/helm/provisioner:
+	helm dependency update --skip-refresh provisioner/
+	helm lint --strict --set coder.image.tag=v0.0.1 provisioner/
+.PHONY: lint/helm/provisioner

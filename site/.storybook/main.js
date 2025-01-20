@@ -1,49 +1,40 @@
-/**
- * @fileoverview This file is configures Storybook
- *
- * @see <https://storybook.js.org/docs/react/configure/overview>
- */
-const path = require("path")
+import turbosnap from "vite-plugin-turbosnap";
 
 module.exports = {
-  // Automatically loads all stories in source ending in 'stories.tsx'
-  //
-  // SEE: https://storybook.js.org/docs/react/configure/overview#configure-story-loading
-  stories: ["../src/**/*.stories.tsx"],
+	stories: ["../src/**/*.stories.tsx"],
 
-  // addons are official and community plugins to extend Storybook.
-  //
-  // SEE: https://storybook.js.org/addons
-  addons: [
-    "@storybook/addon-links",
-    {
-      name: "@storybook/addon-essentials",
-      options: {
-        actions: false,
-      },
-    },
-  ],
+	addons: [
+		"@chromatic-com/storybook",
+		{
+			name: "@storybook/addon-essentials",
+			options: {
+				backgrounds: false,
+			},
+		},
+		"@storybook/addon-links",
+		"@storybook/addon-mdx-gfm",
+		"@storybook/addon-themes",
+		"@storybook/addon-actions",
+		"@storybook/addon-interactions",
+		"storybook-addon-remix-react-router",
+	],
 
-  // SEE: https://storybook.js.org/docs/react/configure/babel
-  babel: async (options) => ({
-    ...options,
-    plugins: [["@babel/plugin-proposal-class-properties", { loose: true }]],
-  }),
+	staticDirs: ["../static"],
 
-  // Static files loaded by storybook, relative to this file.
-  //
-  // SEE: https://storybook.js.org/docs/react/configure/overview#using-storybook-api
-  staticDirs: ["../static"],
+	framework: {
+		name: "@storybook/react-vite",
+		options: {},
+	},
 
-  // Storybook internally uses its own Webpack configuration instead of ours.
-  //
-  // SEE: https://storybook.js.org/docs/react/configure/webpack
-  webpackFinal: async (config) => {
-    config.resolve.modules = [
-      path.resolve(__dirname, ".."),
-      "node_modules",
-      "../src",
-    ]
-    return config
-  },
-}
+	async viteFinal(config, { configType }) {
+		config.plugins = config.plugins || [];
+		if (configType === "PRODUCTION") {
+			config.plugins.push(
+				turbosnap({
+					rootDir: config.root || "",
+				}),
+			);
+		}
+		return config;
+	},
+};

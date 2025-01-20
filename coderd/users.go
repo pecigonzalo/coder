@@ -1,15 +1,11 @@
 package coderd
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
-	"os"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/render"
@@ -17,23 +13,79 @@ import (
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog"
-	"github.com/coder/coder/coderd/audit"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/gitsshkey"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/coderd/telemetry"
-	"github.com/coder/coder/coderd/userpassword"
-	"github.com/coder/coder/coderd/util/slice"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/examples"
+
+	"github.com/coder/coder/v2/coderd/audit"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/db2sdk"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/gitsshkey"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/coderd/notifications"
+	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/rbac/policy"
+	"github.com/coder/coder/v2/coderd/searchquery"
+	"github.com/coder/coder/v2/coderd/telemetry"
+	"github.com/coder/coder/v2/coderd/userpassword"
+	"github.com/coder/coder/v2/coderd/util/ptr"
+	"github.com/coder/coder/v2/coderd/util/slice"
+	"github.com/coder/coder/v2/codersdk"
 )
 
+// userDebugOIDC returns the OIDC debug context for the user.
+// Not going to expose this via swagger as the return payload is not guaranteed
+// to be consistent between releases.
+//
+// @Summary Debug OIDC context for a user
+// @ID debug-oidc-context-for-a-user
+// @Security CoderSessionToken
+// @Tags Agents
+// @Success 200 "Success"
+// @Param user path string true "User ID, name, or me"
+// @Router /debug/{user}/debug-link [get]
+// @x-apidocgen {"skip": true}
+func (api *API) userDebugOIDC(rw http.ResponseWriter, r *http.Request) {
+	var (
+		ctx  = r.Context()
+		user = httpmw.UserParam(r)
+	)
+
+	if user.LoginType != database.LoginTypeOIDC {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "User is not an OIDC user.",
+		})
+		return
+	}
+
+	link, err := api.Database.GetUserLinkByUserIDLoginType(ctx, database.GetUserLinkByUserIDLoginTypeParams{
+		UserID:    user.ID,
+		LoginType: database.LoginTypeOIDC,
+	})
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Failed to get user links.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	httpapi.Write(ctx, rw, http.StatusOK, link.Claims)
+}
+
 // Returns whether the initial user has been created or not.
+//
+// @Summary Check initial user created
+// @ID check-initial-user-created
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Success 200 {object} codersdk.Response
+// @Router /users/first [get]
 func (api *API) firstUser(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	userCount, err := api.Database.GetUserCount(ctx)
+	// nolint:gocritic // Getting user count is a system function.
+	userCount, err := api.Database.GetUserCount(dbauthz.AsSystemRestricted(ctx))
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error fetching user count.",
@@ -55,6 +107,16 @@ func (api *API) firstUser(rw http.ResponseWriter, r *http.Request) {
 }
 
 // Creates the initial user for a Coder deployment.
+//
+// @Summary Create initial user
+// @ID create-initial-user
+// @Security CoderSessionToken
+// @Accept json
+// @Produce json
+// @Tags Users
+// @Param request body codersdk.CreateFirstUserRequest true "First user request"
+// @Success 201 {object} codersdk.CreateFirstUserResponse
+// @Router /users/first [post]
 func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var createUser codersdk.CreateFirstUserRequest
@@ -63,7 +125,8 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	// This should only function for the first user.
-	userCount, err := api.Database.GetUserCount(ctx)
+	// nolint:gocritic // Getting user count is a system function.
+	userCount, err := api.Database.GetUserCount(dbauthz.AsSystemRestricted(ctx))
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error fetching user count.",
@@ -80,15 +143,62 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, organizationID, err := api.CreateUser(ctx, api.Database, CreateUserRequest{
-		CreateUserRequest: codersdk.CreateUserRequest{
+	err = userpassword.Validate(createUser.Password)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Password not strong enough!",
+			Validations: []codersdk.ValidationError{{
+				Field:  "password",
+				Detail: err.Error(),
+			}},
+		})
+		return
+	}
+
+	if createUser.Trial && api.TrialGenerator != nil {
+		err = api.TrialGenerator(ctx, codersdk.LicensorTrialRequest{
+			Email:       createUser.Email,
+			FirstName:   createUser.TrialInfo.FirstName,
+			LastName:    createUser.TrialInfo.LastName,
+			PhoneNumber: createUser.TrialInfo.PhoneNumber,
+			JobTitle:    createUser.TrialInfo.JobTitle,
+			CompanyName: createUser.TrialInfo.CompanyName,
+			Country:     createUser.TrialInfo.Country,
+			Developers:  createUser.TrialInfo.Developers,
+		})
+		if err != nil {
+			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+				Message: "Failed to generate trial",
+				Detail:  err.Error(),
+			})
+			return
+		}
+	}
+
+	//nolint:gocritic // needed to create first user
+	defaultOrg, err := api.Database.GetDefaultOrganization(dbauthz.AsSystemRestricted(ctx))
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error fetching default organization. If you are encountering this error, you will have to restart the Coder deployment.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	//nolint:gocritic // needed to create first user
+	user, err := api.CreateUser(dbauthz.AsSystemRestricted(ctx), api.Database, CreateUserRequest{
+		CreateUserRequestWithOrgs: codersdk.CreateUserRequestWithOrgs{
 			Email:    createUser.Email,
 			Username: createUser.Username,
+			Name:     createUser.Name,
 			Password: createUser.Password,
-			// Create an org for the first user.
-			OrganizationID: uuid.Nil,
+			// There's no reason to create the first user as dormant, since you have
+			// to login immediately anyways.
+			UserStatus:      ptr.Ref(codersdk.UserStatusActive),
+			OrganizationIDs: []uuid.UUID{defaultOrg.ID},
 		},
-		LoginType: database.LoginTypePassword,
+		LoginType:          database.LoginTypePassword,
+		accountCreatorName: "coder",
 	})
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
@@ -96,6 +206,16 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 			Detail:  err.Error(),
 		})
 		return
+	}
+
+	if api.RefreshEntitlements != nil {
+		err = api.RefreshEntitlements(ctx)
+		if err != nil {
+			api.Logger.Error(ctx, "failed to refresh entitlements after generating trial license")
+			return
+		}
+	} else {
+		api.Logger.Debug(ctx, "entitlements will not be refreshed")
 	}
 
 	telemetryUser := telemetry.ConvertUser(user)
@@ -109,8 +229,9 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 	// 	the user. Maybe I add this ability to grant roles in the createUser api
 	//	and add some rbac bypass when calling api functions this way??
 	// Add the admin role to this first user.
-	_, err = api.Database.UpdateUserRoles(ctx, database.UpdateUserRolesParams{
-		GrantedRoles: []string{rbac.RoleOwner()},
+	//nolint:gocritic // needed to create first user
+	_, err = api.Database.UpdateUserRoles(dbauthz.AsSystemRestricted(ctx), database.UpdateUserRolesParams{
+		GrantedRoles: []string{rbac.RoleOwner().String()},
 		ID:           user.ID,
 	})
 	if err != nil {
@@ -121,109 +242,27 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-import any designated templates into the new organization.
-	for _, template := range api.AutoImportTemplates {
-		archive, err := examples.Archive(string(template))
-		if err != nil {
-			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-				Message: "Internal error importing template.",
-				Detail:  xerrors.Errorf("load template archive for %q: %w", template, err).Error(),
-			})
-			return
-		}
-
-		// Determine which parameter values to use.
-		parameters := map[string]string{}
-		switch template {
-		case AutoImportTemplateKubernetes:
-
-			// Determine the current namespace we're in.
-			const namespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
-			namespace, err := os.ReadFile(namespaceFile)
-			if err != nil {
-				parameters["use_kubeconfig"] = "true" // use ~/.config/kubeconfig
-				parameters["namespace"] = "coder-workspaces"
-			} else {
-				parameters["use_kubeconfig"] = "false" // use SA auth
-				parameters["namespace"] = string(bytes.TrimSpace(namespace))
-			}
-
-		default:
-			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-				Message: "Internal error importing template.",
-				Detail:  fmt.Sprintf("cannot auto-import %q template", template),
-			})
-			return
-		}
-
-		tpl, err := api.autoImportTemplate(ctx, autoImportTemplateOpts{
-			name:    string(template),
-			archive: archive,
-			params:  parameters,
-			userID:  user.ID,
-			orgID:   organizationID,
-		})
-		if err != nil {
-			api.Logger.Warn(ctx, "failed to auto-import template", slog.F("template", template), slog.F("parameters", parameters), slog.Error(err))
-			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-				Message: "Internal error importing template.",
-				Detail:  xerrors.Errorf("failed to import template %q: %w", template, err).Error(),
-			})
-			return
-		}
-
-		api.Logger.Info(ctx, "auto-imported template", slog.F("id", tpl.ID), slog.F("template", template), slog.F("parameters", parameters))
-	}
-
 	httpapi.Write(ctx, rw, http.StatusCreated, codersdk.CreateFirstUserResponse{
 		UserID:         user.ID,
-		OrganizationID: organizationID,
+		OrganizationID: defaultOrg.ID,
 	})
 }
 
+// @Summary Get users
+// @ID get-users
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param q query string false "Search query"
+// @Param after_id query string false "After ID" format(uuid)
+// @Param limit query int false "Page limit"
+// @Param offset query int false "Page offset"
+// @Success 200 {object} codersdk.GetUsersResponse
+// @Router /users [get]
 func (api *API) users(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	query := r.URL.Query().Get("q")
-	params, errs := userSearchQuery(query)
-	if len(errs) > 0 {
-		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
-			Message:     "Invalid user search query.",
-			Validations: errs,
-		})
-		return
-	}
-
-	paginationParams, ok := parsePagination(rw, r)
+	users, userCount, ok := api.GetUsers(rw, r)
 	if !ok {
-		return
-	}
-
-	users, err := api.Database.GetUsers(ctx, database.GetUsersParams{
-		AfterID:   paginationParams.AfterID,
-		OffsetOpt: int32(paginationParams.Offset),
-		LimitOpt:  int32(paginationParams.Limit),
-		Search:    params.Search,
-		Status:    params.Status,
-		RbacRole:  params.RbacRole,
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		httpapi.Write(ctx, rw, http.StatusOK, []codersdk.User{})
-		return
-	}
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error fetching users.",
-			Detail:  err.Error(),
-		})
-		return
-	}
-
-	users, err = AuthorizeFilter(api.HTTPAuth, r, rbac.ActionRead, users)
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error fetching users.",
-			Detail:  err.Error(),
-		})
 		return
 	}
 
@@ -248,10 +287,70 @@ func (api *API) users(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	render.Status(r, http.StatusOK)
-	render.JSON(rw, r, convertUsers(users, organizationIDsByUserID))
+	render.JSON(rw, r, codersdk.GetUsersResponse{
+		Users: convertUsers(users, organizationIDsByUserID),
+		Count: int(userCount),
+	})
+}
+
+func (api *API) GetUsers(rw http.ResponseWriter, r *http.Request) ([]database.User, int64, bool) {
+	ctx := r.Context()
+	query := r.URL.Query().Get("q")
+	params, errs := searchquery.Users(query)
+	if len(errs) > 0 {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message:     "Invalid user search query.",
+			Validations: errs,
+		})
+		return nil, -1, false
+	}
+
+	paginationParams, ok := parsePagination(rw, r)
+	if !ok {
+		return nil, -1, false
+	}
+
+	userRows, err := api.Database.GetUsers(ctx, database.GetUsersParams{
+		AfterID:        paginationParams.AfterID,
+		Search:         params.Search,
+		Status:         params.Status,
+		RbacRole:       params.RbacRole,
+		LastSeenBefore: params.LastSeenBefore,
+		LastSeenAfter:  params.LastSeenAfter,
+		CreatedAfter:   params.CreatedAfter,
+		CreatedBefore:  params.CreatedBefore,
+		OffsetOpt:      int32(paginationParams.Offset),
+		LimitOpt:       int32(paginationParams.Limit),
+	})
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error fetching users.",
+			Detail:  err.Error(),
+		})
+		return nil, -1, false
+	}
+
+	// GetUsers does not return ErrNoRows because it uses a window function to get the count.
+	// So we need to check if the userRows is empty and return an empty array if so.
+	if len(userRows) == 0 {
+		return []database.User{}, 0, true
+	}
+
+	users := database.ConvertUserRows(userRows)
+	return users, userRows[0].Count, true
 }
 
 // Creates a new user.
+//
+// @Summary Create new user
+// @ID create-new-user
+// @Security CoderSessionToken
+// @Accept json
+// @Produce json
+// @Tags Users
+// @Param request body codersdk.CreateUserRequestWithOrgs true "Create user request"
+// @Success 201 {object} codersdk.User
+// @Router /users [post]
 func (api *API) postUser(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	auditor := *api.Auditor.Load()
@@ -263,21 +362,43 @@ func (api *API) postUser(rw http.ResponseWriter, r *http.Request) {
 	})
 	defer commitAudit()
 
-	// Create the user on the site.
-	if !api.Authorize(r, rbac.ActionCreate, rbac.ResourceUser) {
-		httpapi.Forbidden(rw)
-		return
-	}
-
-	var req codersdk.CreateUserRequest
+	var req codersdk.CreateUserRequestWithOrgs
 	if !httpapi.Read(ctx, rw, r, &req) {
 		return
 	}
 
-	// Create the organization member in the org.
-	if !api.Authorize(r, rbac.ActionCreate,
-		rbac.ResourceOrganizationMember.InOrg(req.OrganizationID)) {
-		httpapi.ResourceNotFound(rw)
+	if req.UserLoginType == "" {
+		// Default to password auth
+		req.UserLoginType = codersdk.LoginTypePassword
+	}
+
+	if req.UserLoginType != codersdk.LoginTypePassword && req.Password != "" {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: fmt.Sprintf("Password cannot be set for non-password (%q) authentication.", req.UserLoginType),
+		})
+		return
+	}
+
+	// If password auth is disabled, don't allow new users to be
+	// created with a password!
+	if api.DeploymentValues.DisablePasswordAuth && req.UserLoginType == codersdk.LoginTypePassword {
+		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
+			Message: "Password based authentication is disabled! Unable to provision new users with password authentication.",
+		})
+		return
+	}
+
+	if len(req.OrganizationIDs) == 0 {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "No organization specified to place the user as a member of. It is required to specify at least one organization id to place the user in.",
+			Detail:  "required at least 1 value for the array 'organization_ids'",
+			Validations: []codersdk.ValidationError{
+				{
+					Field:  "organization_ids",
+					Detail: "Missing values, this cannot be empty",
+				},
+			},
+		})
 		return
 	}
 
@@ -301,25 +422,91 @@ func (api *API) postUser(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = api.Database.GetOrganizationByID(ctx, req.OrganizationID)
-	if errors.Is(err, sql.ErrNoRows) {
-		httpapi.Write(ctx, rw, http.StatusNotFound, codersdk.Response{
-			Message: fmt.Sprintf("Organization does not exist with the provided id %q.", req.OrganizationID),
-		})
-		return
+	// If an organization was provided, make sure it exists.
+	for i, orgID := range req.OrganizationIDs {
+		var orgErr error
+		if orgID != uuid.Nil {
+			_, orgErr = api.Database.GetOrganizationByID(ctx, orgID)
+		} else {
+			var defaultOrg database.Organization
+			defaultOrg, orgErr = api.Database.GetDefaultOrganization(ctx)
+			if orgErr == nil {
+				// converts uuid.Nil --> default org.ID
+				req.OrganizationIDs[i] = defaultOrg.ID
+			}
+		}
+		if orgErr != nil {
+			if httpapi.Is404Error(orgErr) {
+				httpapi.Write(ctx, rw, http.StatusNotFound, codersdk.Response{
+					Message: fmt.Sprintf("Organization does not exist with the provided id %q.", orgID),
+				})
+				return
+			}
+
+			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+				Message: "Internal error fetching organization.",
+				Detail:  orgErr.Error(),
+			})
+			return
+		}
 	}
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error fetching organization.",
-			Detail:  err.Error(),
+
+	var loginType database.LoginType
+	switch req.UserLoginType {
+	case codersdk.LoginTypeNone:
+		loginType = database.LoginTypeNone
+	case codersdk.LoginTypePassword:
+		err = userpassword.Validate(req.Password)
+		if err != nil {
+			httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+				Message: "Password not strong enough!",
+				Validations: []codersdk.ValidationError{{
+					Field:  "password",
+					Detail: err.Error(),
+				}},
+			})
+			return
+		}
+		loginType = database.LoginTypePassword
+	case codersdk.LoginTypeOIDC:
+		if api.OIDCConfig == nil {
+			httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+				Message: "You must configure OIDC before creating OIDC users.",
+			})
+			return
+		}
+		loginType = database.LoginTypeOIDC
+	case codersdk.LoginTypeGithub:
+		loginType = database.LoginTypeGithub
+	default:
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: fmt.Sprintf("Unsupported login type %q for manually creating new users.", req.UserLoginType),
 		})
 		return
 	}
 
-	user, _, err := api.CreateUser(ctx, api.Database, CreateUserRequest{
-		CreateUserRequest: req,
-		LoginType:         database.LoginTypePassword,
+	apiKey := httpmw.APIKey(r)
+
+	accountCreator, err := api.Database.GetUserByID(ctx, apiKey.UserID)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Unable to determine the details of the actor creating the account.",
+		})
+		return
+	}
+
+	user, err := api.CreateUser(ctx, api.Database, CreateUserRequest{
+		CreateUserRequestWithOrgs: req,
+		LoginType:                 loginType,
+		accountCreatorName:        accountCreator.Name,
 	})
+
+	if dbauthz.IsNotAuthorizedError(err) {
+		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
+			Message: "You are not authorized to create users.",
+		})
+		return
+	}
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error creating user.",
@@ -335,13 +522,21 @@ func (api *API) postUser(rw http.ResponseWriter, r *http.Request) {
 		Users: []telemetry.User{telemetry.ConvertUser(user)},
 	})
 
-	httpapi.Write(ctx, rw, http.StatusCreated, convertUser(user, []uuid.UUID{req.OrganizationID}))
+	httpapi.Write(ctx, rw, http.StatusCreated, db2sdk.User(user, req.OrganizationIDs))
 }
 
+// @Summary Delete user
+// @ID delete-user
+// @Security CoderSessionToken
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Success 200
+// @Router /users/{user} [delete]
 func (api *API) deleteUser(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	auditor := *api.Auditor.Load()
 	user := httpmw.UserParam(r)
+	auth := httpmw.UserAuthorization(r)
 	aReq, commitAudit := audit.InitRequest[database.User](rw, &audit.RequestParams{
 		Audit:   auditor,
 		Log:     api.Logger,
@@ -351,8 +546,10 @@ func (api *API) deleteUser(rw http.ResponseWriter, r *http.Request) {
 	aReq.Old = user
 	defer commitAudit()
 
-	if !api.Authorize(r, rbac.ActionDelete, rbac.ResourceUser) {
-		httpapi.Forbidden(rw)
+	if auth.ID == user.ID.String() {
+		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
+			Message: "You cannot delete yourself!",
+		})
 		return
 	}
 
@@ -373,10 +570,11 @@ func (api *API) deleteUser(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = api.Database.UpdateUserDeletedByID(ctx, database.UpdateUserDeletedByIDParams{
-		ID:      user.ID,
-		Deleted: true,
-	})
+	err = api.Database.UpdateUserDeletedByID(ctx, user.ID)
+	if dbauthz.IsNotAuthorizedError(err) {
+		httpapi.Forbidden(rw)
+		return
+	}
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error deleting user.",
@@ -386,6 +584,41 @@ func (api *API) deleteUser(rw http.ResponseWriter, r *http.Request) {
 	}
 	user.Deleted = true
 	aReq.New = user
+
+	userAdmins, err := findUserAdmins(ctx, api.Database)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error fetching user admins.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	apiKey := httpmw.APIKey(r)
+
+	accountDeleter, err := api.Database.GetUserByID(ctx, apiKey.UserID)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Unable to determine the details of the actor deleting the account.",
+		})
+		return
+	}
+
+	for _, u := range userAdmins {
+		// nolint: gocritic // Need notifier actor to enqueue notifications
+		if _, err := api.NotificationsEnqueuer.Enqueue(dbauthz.AsNotifier(ctx), u.ID, notifications.TemplateUserAccountDeleted,
+			map[string]string{
+				"deleted_account_name":      user.Username,
+				"deleted_account_user_name": user.Name,
+				"initiator":                 accountDeleter.Name,
+			},
+			"api-users-delete",
+			user.ID,
+		); err != nil {
+			api.Logger.Warn(ctx, "unable to notify about deleted user", slog.F("deleted_user", user.Username), slog.Error(err))
+		}
+	}
+
 	httpapi.Write(ctx, rw, http.StatusOK, codersdk.Response{
 		Message: "User has been deleted!",
 	})
@@ -393,16 +626,19 @@ func (api *API) deleteUser(rw http.ResponseWriter, r *http.Request) {
 
 // Returns the parameterized user requested. All validation
 // is completed in the middleware for this route.
+//
+// @Summary Get user by name
+// @ID get-user-by-name
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, username, or me"
+// @Success 200 {object} codersdk.User
+// @Router /users/{user} [get]
 func (api *API) userByName(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := httpmw.UserParam(r)
 	organizationIDs, err := userOrganizationIDs(ctx, api, user)
-
-	if !api.Authorize(r, rbac.ActionRead, rbac.ResourceUser) {
-		httpapi.ResourceNotFound(rw)
-		return
-	}
-
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error fetching user's organizations.",
@@ -411,9 +647,101 @@ func (api *API) userByName(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpapi.Write(ctx, rw, http.StatusOK, convertUser(user, organizationIDs))
+	httpapi.Write(ctx, rw, http.StatusOK, db2sdk.User(user, organizationIDs))
 }
 
+// Returns recent build parameters for the signed-in user.
+//
+// @Summary Get autofill build parameters for user
+// @ID get-autofill-build-parameters-for-user
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, username, or me"
+// @Param template_id query string true "Template ID"
+// @Success 200 {array} codersdk.UserParameter
+// @Router /users/{user}/autofill-parameters [get]
+func (api *API) userAutofillParameters(rw http.ResponseWriter, r *http.Request) {
+	user := httpmw.UserParam(r)
+
+	p := httpapi.NewQueryParamParser().RequiredNotEmpty("template_id")
+	templateID := p.UUID(r.URL.Query(), uuid.UUID{}, "template_id")
+	p.ErrorExcessParams(r.URL.Query())
+	if len(p.Errors) > 0 {
+		httpapi.Write(r.Context(), rw, http.StatusBadRequest, codersdk.Response{
+			Message:     "Invalid query parameters.",
+			Validations: p.Errors,
+		})
+		return
+	}
+
+	params, err := api.Database.GetUserWorkspaceBuildParameters(
+		r.Context(),
+		database.GetUserWorkspaceBuildParametersParams{
+			OwnerID:    user.ID,
+			TemplateID: templateID,
+		},
+	)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		httpapi.Write(r.Context(), rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error fetching user's parameters.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	sdkParams := []codersdk.UserParameter{}
+	for _, param := range params {
+		sdkParams = append(sdkParams, codersdk.UserParameter{
+			Name:  param.Name,
+			Value: param.Value,
+		})
+	}
+
+	httpapi.Write(r.Context(), rw, http.StatusOK, sdkParams)
+}
+
+// Returns the user's login type. This only works if the api key for authorization
+// and the requested user match. Eg: 'me'
+//
+// @Summary Get user login type
+// @ID get-user-login-type
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Success 200 {object} codersdk.UserLoginType
+// @Router /users/{user}/login-type [get]
+func (*API) userLoginType(rw http.ResponseWriter, r *http.Request) {
+	var (
+		ctx  = r.Context()
+		user = httpmw.UserParam(r)
+		key  = httpmw.APIKey(r)
+	)
+
+	if key.UserID != user.ID {
+		// Currently this is only valid for querying yourself.
+		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
+			Message: "You are not authorized to view this user's login type.",
+		})
+		return
+	}
+
+	httpapi.Write(ctx, rw, http.StatusOK, codersdk.UserLoginType{
+		LoginType: codersdk.LoginType(user.LoginType),
+	})
+}
+
+// @Summary Update user profile
+// @ID update-user-profile
+// @Security CoderSessionToken
+// @Accept json
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Param request body codersdk.UpdateUserProfileRequest true "Updated profile"
+// @Success 200 {object} codersdk.User
+// @Router /users/{user}/profile [put]
 func (api *API) putUserProfile(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -429,11 +757,6 @@ func (api *API) putUserProfile(rw http.ResponseWriter, r *http.Request) {
 	defer commitAudit()
 	aReq.Old = user
 
-	if !api.Authorize(r, rbac.ActionUpdate, rbac.ResourceUser) {
-		httpapi.ResourceNotFound(rw)
-		return
-	}
-
 	var params codersdk.UpdateUserProfileRequest
 	if !httpapi.Read(ctx, rw, r, &params) {
 		return
@@ -444,15 +767,12 @@ func (api *API) putUserProfile(rw http.ResponseWriter, r *http.Request) {
 	isDifferentUser := existentUser.ID != user.ID
 
 	if err == nil && isDifferentUser {
-		responseErrors := []codersdk.ValidationError{}
-		if existentUser.Username == params.Username {
-			responseErrors = append(responseErrors, codersdk.ValidationError{
-				Field:  "username",
-				Detail: "this value is already in use and should be unique",
-			})
-		}
+		responseErrors := []codersdk.ValidationError{{
+			Field:  "username",
+			Detail: "This username is already in use.",
+		}}
 		httpapi.Write(ctx, rw, http.StatusConflict, codersdk.Response{
-			Message:     "User already exists.",
+			Message:     "A user with this username already exists.",
 			Validations: responseErrors,
 		})
 		return
@@ -468,9 +788,10 @@ func (api *API) putUserProfile(rw http.ResponseWriter, r *http.Request) {
 	updatedUserProfile, err := api.Database.UpdateUserProfile(ctx, database.UpdateUserProfileParams{
 		ID:        user.ID,
 		Email:     user.Email,
+		Name:      params.Name,
 		AvatarURL: user.AvatarURL,
 		Username:  params.Username,
-		UpdatedAt: database.Now(),
+		UpdatedAt: dbtime.Now(),
 	})
 	aReq.New = updatedUserProfile
 
@@ -491,7 +812,31 @@ func (api *API) putUserProfile(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpapi.Write(ctx, rw, http.StatusOK, convertUser(updatedUserProfile, organizationIDs))
+	httpapi.Write(ctx, rw, http.StatusOK, db2sdk.User(updatedUserProfile, organizationIDs))
+}
+
+// @Summary Suspend user account
+// @ID suspend-user-account
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Success 200 {object} codersdk.User
+// @Router /users/{user}/status/suspend [put]
+func (api *API) putSuspendUserAccount() func(rw http.ResponseWriter, r *http.Request) {
+	return api.putUserStatus(database.UserStatusSuspended)
+}
+
+// @Summary Activate user account
+// @ID activate-user-account
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Success 200 {object} codersdk.User
+// @Router /users/{user}/status/activate [put]
+func (api *API) putActivateUserAccount() func(rw http.ResponseWriter, r *http.Request) {
+	return api.putUserStatus(database.UserStatusActive)
 }
 
 func (api *API) putUserStatus(status database.UserStatus) func(rw http.ResponseWriter, r *http.Request) {
@@ -511,11 +856,6 @@ func (api *API) putUserStatus(status database.UserStatus) func(rw http.ResponseW
 		defer commitAudit()
 		aReq.Old = user
 
-		if !api.Authorize(r, rbac.ActionDelete, rbac.ResourceUser) {
-			httpapi.ResourceNotFound(rw)
-			return
-		}
-
 		if status == database.UserStatusSuspended {
 			// There are some manual protections when suspending a user to
 			// prevent certain situations.
@@ -527,7 +867,7 @@ func (api *API) putUserStatus(status database.UserStatus) func(rw http.ResponseW
 					Message: "You cannot suspend yourself.",
 				})
 				return
-			case slice.Contains(user.RBACRoles, rbac.RoleOwner()):
+			case slice.Contains(user.RBACRoles, rbac.RoleOwner().String()):
 				// You may not suspend an owner
 				httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 					Message: fmt.Sprintf("You cannot suspend a user with the %q role. You must remove the role first.", rbac.RoleOwner()),
@@ -536,10 +876,18 @@ func (api *API) putUserStatus(status database.UserStatus) func(rw http.ResponseW
 			}
 		}
 
-		suspendedUser, err := api.Database.UpdateUserStatus(ctx, database.UpdateUserStatusParams{
+		actingUser, err := api.Database.GetUserByID(ctx, apiKey.UserID)
+		if err != nil {
+			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+				Message: "Unable to determine the details of the actor creating the account.",
+			})
+			return
+		}
+
+		targetUser, err := api.Database.UpdateUserStatus(ctx, database.UpdateUserStatusParams{
 			ID:        user.ID,
 			Status:    status,
-			UpdatedAt: database.Now(),
+			UpdatedAt: dbtime.Now(),
 		})
 		if err != nil {
 			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
@@ -548,7 +896,12 @@ func (api *API) putUserStatus(status database.UserStatus) func(rw http.ResponseW
 			})
 			return
 		}
-		aReq.New = suspendedUser
+		aReq.New = targetUser
+
+		err = api.notifyUserStatusChanged(ctx, actingUser.Name, user, status)
+		if err != nil {
+			api.Logger.Warn(ctx, "unable to notify about changed user's status", slog.F("affected_user", user.Username), slog.Error(err))
+		}
 
 		organizations, err := userOrganizationIDs(ctx, api, user)
 		if err != nil {
@@ -559,15 +912,121 @@ func (api *API) putUserStatus(status database.UserStatus) func(rw http.ResponseW
 			return
 		}
 
-		httpapi.Write(ctx, rw, http.StatusOK, convertUser(suspendedUser, organizations))
+		httpapi.Write(ctx, rw, http.StatusOK, db2sdk.User(targetUser, organizations))
 	}
 }
 
+func (api *API) notifyUserStatusChanged(ctx context.Context, actingUserName string, targetUser database.User, status database.UserStatus) error {
+	var labels map[string]string
+	var adminTemplateID, personalTemplateID uuid.UUID
+	switch status {
+	case database.UserStatusSuspended:
+		labels = map[string]string{
+			"suspended_account_name":      targetUser.Username,
+			"suspended_account_user_name": targetUser.Name,
+			"initiator":                   actingUserName,
+		}
+		adminTemplateID = notifications.TemplateUserAccountSuspended
+		personalTemplateID = notifications.TemplateYourAccountSuspended
+	case database.UserStatusActive:
+		labels = map[string]string{
+			"activated_account_name":      targetUser.Username,
+			"activated_account_user_name": targetUser.Name,
+			"initiator":                   actingUserName,
+		}
+		adminTemplateID = notifications.TemplateUserAccountActivated
+		personalTemplateID = notifications.TemplateYourAccountActivated
+	default:
+		api.Logger.Error(ctx, "user status is not supported", slog.F("username", targetUser.Username), slog.F("user_status", string(status)))
+		return xerrors.Errorf("unable to notify admins as the user's status is unsupported")
+	}
+
+	userAdmins, err := findUserAdmins(ctx, api.Database)
+	if err != nil {
+		api.Logger.Error(ctx, "unable to find user admins", slog.Error(err))
+	}
+
+	// Send notifications to user admins and affected user
+	for _, u := range userAdmins {
+		// nolint:gocritic // Need notifier actor to enqueue notifications
+		if _, err := api.NotificationsEnqueuer.Enqueue(dbauthz.AsNotifier(ctx), u.ID, adminTemplateID,
+			labels, "api-put-user-status",
+			targetUser.ID,
+		); err != nil {
+			api.Logger.Warn(ctx, "unable to notify about changed user's status", slog.F("affected_user", targetUser.Username), slog.Error(err))
+		}
+	}
+	// nolint:gocritic // Need notifier actor to enqueue notifications
+	if _, err := api.NotificationsEnqueuer.Enqueue(dbauthz.AsNotifier(ctx), targetUser.ID, personalTemplateID,
+		labels, "api-put-user-status",
+		targetUser.ID,
+	); err != nil {
+		api.Logger.Warn(ctx, "unable to notify user about status change of their account", slog.F("affected_user", targetUser.Username), slog.Error(err))
+	}
+	return nil
+}
+
+// @Summary Update user appearance settings
+// @ID update-user-appearance-settings
+// @Security CoderSessionToken
+// @Accept json
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Param request body codersdk.UpdateUserAppearanceSettingsRequest true "New appearance settings"
+// @Success 200 {object} codersdk.User
+// @Router /users/{user}/appearance [put]
+func (api *API) putUserAppearanceSettings(rw http.ResponseWriter, r *http.Request) {
+	var (
+		ctx  = r.Context()
+		user = httpmw.UserParam(r)
+	)
+
+	var params codersdk.UpdateUserAppearanceSettingsRequest
+	if !httpapi.Read(ctx, rw, r, &params) {
+		return
+	}
+
+	updatedUser, err := api.Database.UpdateUserAppearanceSettings(ctx, database.UpdateUserAppearanceSettingsParams{
+		ID:              user.ID,
+		ThemePreference: params.ThemePreference,
+		UpdatedAt:       dbtime.Now(),
+	})
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error updating user.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	organizationIDs, err := userOrganizationIDs(ctx, api, user)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error fetching user's organizations.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	httpapi.Write(ctx, rw, http.StatusOK, db2sdk.User(updatedUser, organizationIDs))
+}
+
+// @Summary Update user password
+// @ID update-user-password
+// @Security CoderSessionToken
+// @Accept json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Param request body codersdk.UpdateUserPasswordRequest true "Update password request"
+// @Success 204
+// @Router /users/{user}/password [put]
 func (api *API) putUserPassword(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
 		user              = httpmw.UserParam(r)
 		params            codersdk.UpdateUserPasswordRequest
+		apiKey            = httpmw.APIKey(r)
 		auditor           = *api.Auditor.Load()
 		aReq, commitAudit = audit.InitRequest[database.User](rw, &audit.RequestParams{
 			Audit:   auditor,
@@ -579,12 +1038,27 @@ func (api *API) putUserPassword(rw http.ResponseWriter, r *http.Request) {
 	defer commitAudit()
 	aReq.Old = user
 
-	if !api.Authorize(r, rbac.ActionUpdate, rbac.ResourceUserData.WithOwner(user.ID.String())) {
+	if !api.Authorize(r, policy.ActionUpdatePersonal, user) {
 		httpapi.ResourceNotFound(rw)
 		return
 	}
 
 	if !httpapi.Read(ctx, rw, r, &params) {
+		return
+	}
+
+	if user.LoginType != database.LoginTypePassword {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Users without password login type cannot change their password.",
+		})
+		return
+	}
+
+	// A user need to put its own password to update it
+	if apiKey.UserID == user.ID && params.OldPassword == "" {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Old password is required.",
+		})
 		return
 	}
 
@@ -602,13 +1076,7 @@ func (api *API) putUserPassword(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// admins can change passwords without sending old_password
-	if params.OldPassword == "" {
-		if !api.Authorize(r, rbac.ActionUpdate, rbac.ResourceUser) {
-			httpapi.Forbidden(rw)
-			return
-		}
-	} else {
+	if params.OldPassword != "" {
 		// if they send something let's validate it
 		ok, err := userpassword.Compare(string(user.HashedPassword), params.OldPassword)
 		if err != nil {
@@ -632,6 +1100,14 @@ func (api *API) putUserPassword(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Prevent users reusing their old password.
+	if match, _ := userpassword.Compare(string(user.HashedPassword), params.Password); match {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "New password cannot match old password.",
+		})
+		return
+	}
+
 	hashedPassword, err := userpassword.Hash(params.Password)
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
@@ -640,10 +1116,23 @@ func (api *API) putUserPassword(rw http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	err = api.Database.UpdateUserHashedPassword(ctx, database.UpdateUserHashedPasswordParams{
-		ID:             user.ID,
-		HashedPassword: []byte(hashedPassword),
-	})
+
+	err = api.Database.InTx(func(tx database.Store) error {
+		err = tx.UpdateUserHashedPassword(ctx, database.UpdateUserHashedPasswordParams{
+			ID:             user.ID,
+			HashedPassword: []byte(hashedPassword),
+		})
+		if err != nil {
+			return xerrors.Errorf("update user hashed password: %w", err)
+		}
+
+		err = tx.DeleteAPIKeysByUserID(ctx, user.ID)
+		if err != nil {
+			return xerrors.Errorf("delete api keys by user ID: %w", err)
+		}
+
+		return nil
+	}, nil)
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error updating user's password.",
@@ -656,24 +1145,36 @@ func (api *API) putUserPassword(rw http.ResponseWriter, r *http.Request) {
 	newUser.HashedPassword = []byte(hashedPassword)
 	aReq.New = newUser
 
-	httpapi.Write(ctx, rw, http.StatusNoContent, nil)
+	rw.WriteHeader(http.StatusNoContent)
 }
 
+// @Summary Get user roles
+// @ID get-user-roles
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Success 200 {object} codersdk.User
+// @Router /users/{user}/roles [get]
 func (api *API) userRoles(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := httpmw.UserParam(r)
 
-	if !api.Authorize(r, rbac.ActionRead, rbac.ResourceUserData.WithOwner(user.ID.String())) {
+	if !api.Authorize(r, policy.ActionReadPersonal, user) {
 		httpapi.ResourceNotFound(rw)
 		return
 	}
 
+	// TODO: Replace this with "GetAuthorizationUserRoles"
 	resp := codersdk.UserRoles{
 		Roles:             user.RBACRoles,
 		OrganizationRoles: make(map[uuid.UUID][]string),
 	}
 
-	memberships, err := api.Database.GetOrganizationMembershipsByUserID(ctx, user.ID)
+	memberships, err := api.Database.OrganizationMembers(ctx, database.OrganizationMembersParams{
+		UserID:         user.ID,
+		OrganizationID: uuid.Nil,
+	})
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error fetching user's organization memberships.",
@@ -682,32 +1183,28 @@ func (api *API) userRoles(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only include ones we can read from RBAC.
-	memberships, err = AuthorizeFilter(api.HTTPAuth, r, rbac.ActionRead, memberships)
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error fetching memberships.",
-			Detail:  err.Error(),
-		})
-		return
-	}
-
 	for _, mem := range memberships {
-		// If we can read the org member, include the roles.
-		if err == nil {
-			resp.OrganizationRoles[mem.OrganizationID] = mem.Roles
-		}
+		resp.OrganizationRoles[mem.OrganizationMember.OrganizationID] = mem.OrganizationMember.Roles
 	}
 
 	httpapi.Write(ctx, rw, http.StatusOK, resp)
 }
 
+// @Summary Assign role to user
+// @ID assign-role-to-user
+// @Security CoderSessionToken
+// @Accept json
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Param request body codersdk.UpdateRoles true "Update roles request"
+// @Success 200 {object} codersdk.User
+// @Router /users/{user}/roles [put]
 func (api *API) putUserRoles(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx = r.Context()
 		// User is the user to modify.
 		user              = httpmw.UserParam(r)
-		actorRoles        = httpmw.UserAuthorization(r)
 		apiKey            = httpmw.APIKey(r)
 		auditor           = *api.Auditor.Load()
 		aReq, commitAudit = audit.InitRequest[database.User](rw, &audit.RequestParams{
@@ -719,6 +1216,14 @@ func (api *API) putUserRoles(rw http.ResponseWriter, r *http.Request) {
 	)
 	defer commitAudit()
 	aReq.Old = user
+
+	if user.LoginType == database.LoginTypeOIDC && api.IDPSync.SiteRoleSyncEnabled() {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Cannot modify roles for OIDC users when role sync is enabled.",
+			Detail:  "'User Role Field' is set in the OIDC configuration. All role changes must come from the oidc identity provider.",
+		})
+		return
+	}
 
 	if apiKey.UserID == user.ID {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
@@ -732,39 +1237,14 @@ func (api *API) putUserRoles(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !api.Authorize(r, rbac.ActionRead, rbac.ResourceUser) {
-		httpapi.ResourceNotFound(rw)
-		return
-	}
-
-	// The member role is always implied.
-	impliedTypes := append(params.Roles, rbac.RoleMember())
-	added, removed := rbac.ChangeRoleSet(user.RBACRoles, impliedTypes)
-
-	// Assigning a role requires the create permission.
-	if len(added) > 0 && !api.Authorize(r, rbac.ActionCreate, rbac.ResourceRoleAssignment) {
-		httpapi.Forbidden(rw)
-		return
-	}
-
-	// Removing a role requires the delete permission.
-	if len(removed) > 0 && !api.Authorize(r, rbac.ActionDelete, rbac.ResourceRoleAssignment) {
-		httpapi.Forbidden(rw)
-		return
-	}
-
-	// Just treat adding & removing as "assigning" for now.
-	for _, roleName := range append(added, removed...) {
-		if !rbac.CanAssignRole(actorRoles.Roles, roleName) {
-			httpapi.Forbidden(rw)
-			return
-		}
-	}
-
-	updatedUser, err := api.updateSiteUserRoles(ctx, database.UpdateUserRolesParams{
+	updatedUser, err := api.Database.UpdateUserRoles(ctx, database.UpdateUserRolesParams{
 		GrantedRoles: params.Roles,
 		ID:           user.ID,
 	})
+	if dbauthz.IsNotAuthorizedError(err) {
+		httpapi.Forbidden(rw)
+		return
+	}
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 			Message: err.Error(),
@@ -782,31 +1262,19 @@ func (api *API) putUserRoles(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpapi.Write(ctx, rw, http.StatusOK, convertUser(updatedUser, organizationIDs))
-}
-
-// updateSiteUserRoles will ensure only site wide roles are passed in as arguments.
-// If an organization role is included, an error is returned.
-func (api *API) updateSiteUserRoles(ctx context.Context, args database.UpdateUserRolesParams) (database.User, error) {
-	// Enforce only site wide roles.
-	for _, r := range args.GrantedRoles {
-		if _, ok := rbac.IsOrgRole(r); ok {
-			return database.User{}, xerrors.Errorf("Must only update site wide roles")
-		}
-
-		if _, err := rbac.RoleByName(r); err != nil {
-			return database.User{}, xerrors.Errorf("%q is not a supported role", r)
-		}
-	}
-
-	updatedUser, err := api.Database.UpdateUserRoles(ctx, args)
-	if err != nil {
-		return database.User{}, xerrors.Errorf("update site roles: %w", err)
-	}
-	return updatedUser, nil
+	httpapi.Write(ctx, rw, http.StatusOK, db2sdk.User(updatedUser, organizationIDs))
 }
 
 // Returns organizations the parameterized user has access to.
+//
+// @Summary Get organizations by user
+// @ID get-organizations-by-user
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Success 200 {array} codersdk.Organization
+// @Router /users/{user}/organizations [get]
 func (api *API) organizationsByUser(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := httpmw.UserParam(r)
@@ -825,7 +1293,7 @@ func (api *API) organizationsByUser(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only return orgs the user can read.
-	organizations, err = AuthorizeFilter(api.HTTPAuth, r, rbac.ActionRead, organizations)
+	organizations, err = AuthorizeFilter(api.HTTPAuth, r, policy.ActionRead, organizations)
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error fetching organizations.",
@@ -834,19 +1302,23 @@ func (api *API) organizationsByUser(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	publicOrganizations := make([]codersdk.Organization, 0, len(organizations))
-	for _, organization := range organizations {
-		publicOrganizations = append(publicOrganizations, convertOrganization(organization))
-	}
-
-	httpapi.Write(ctx, rw, http.StatusOK, publicOrganizations)
+	httpapi.Write(ctx, rw, http.StatusOK, db2sdk.List(organizations, db2sdk.Organization))
 }
 
+// @Summary Get organization by user and organization name
+// @ID get-organization-by-user-and-organization-name
+// @Security CoderSessionToken
+// @Produce json
+// @Tags Users
+// @Param user path string true "User ID, name, or me"
+// @Param organizationname path string true "Organization name"
+// @Success 200 {object} codersdk.Organization
+// @Router /users/{user}/organizations/{organizationname} [get]
 func (api *API) organizationByUserAndName(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	organizationName := chi.URLParam(r, "organizationname")
 	organization, err := api.Database.GetOrganizationByName(ctx, organizationName)
-	if errors.Is(err, sql.ErrNoRows) {
+	if httpapi.Is404Error(err) {
 		httpapi.ResourceNotFound(rw)
 		return
 	}
@@ -858,196 +1330,43 @@ func (api *API) organizationByUserAndName(rw http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if !api.Authorize(r, rbac.ActionRead,
-		rbac.ResourceOrganization.
-			InOrg(organization.ID)) {
-		httpapi.ResourceNotFound(rw)
-		return
-	}
-
-	httpapi.Write(ctx, rw, http.StatusOK, convertOrganization(organization))
-}
-
-// Authenticates the user with an email and password.
-func (api *API) postLogin(rw http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var loginWithPassword codersdk.LoginWithPasswordRequest
-	if !httpapi.Read(ctx, rw, r, &loginWithPassword) {
-		return
-	}
-
-	user, err := api.Database.GetUserByEmailOrUsername(ctx, database.GetUserByEmailOrUsernameParams{
-		Email: loginWithPassword.Email,
-	})
-	if err != nil && !xerrors.Is(err, sql.ErrNoRows) {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error.",
-		})
-		return
-	}
-
-	// If the user doesn't exist, it will be a default struct.
-	equal, err := userpassword.Compare(string(user.HashedPassword), loginWithPassword.Password)
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error.",
-		})
-		return
-	}
-	if !equal {
-		// This message is the same as above to remove ease in detecting whether
-		// users are registered or not. Attackers still could with a timing attack.
-		httpapi.Write(ctx, rw, http.StatusUnauthorized, codersdk.Response{
-			Message: "Incorrect email or password.",
-		})
-		return
-	}
-
-	if user.LoginType != database.LoginTypePassword {
-		httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
-			Message: fmt.Sprintf("Incorrect login type, attempting to use %q but user is of login type %q", database.LoginTypePassword, user.LoginType),
-		})
-		return
-	}
-
-	// If the user logged into a suspended account, reject the login request.
-	if user.Status != database.UserStatusActive {
-		httpapi.Write(ctx, rw, http.StatusUnauthorized, codersdk.Response{
-			Message: "Your account is suspended. Contact an admin to reactivate your account.",
-		})
-		return
-	}
-
-	cookie, err := api.createAPIKey(ctx, createAPIKeyParams{
-		UserID:     user.ID,
-		LoginType:  database.LoginTypePassword,
-		RemoteAddr: r.RemoteAddr,
-	})
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Failed to create API key.",
-			Detail:  err.Error(),
-		})
-		return
-	}
-
-	http.SetCookie(rw, cookie)
-
-	httpapi.Write(ctx, rw, http.StatusCreated, codersdk.LoginWithPasswordResponse{
-		SessionToken: cookie.Value,
-	})
-}
-
-// Clear the user's session cookie.
-func (api *API) postLogout(rw http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	// Get a blank token cookie.
-	cookie := &http.Cookie{
-		// MaxAge < 0 means to delete the cookie now.
-		MaxAge: -1,
-		Name:   codersdk.SessionTokenKey,
-		Path:   "/",
-	}
-	http.SetCookie(rw, cookie)
-
-	// Delete the session token from database.
-	apiKey := httpmw.APIKey(r)
-	err := api.Database.DeleteAPIKeyByID(ctx, apiKey.ID)
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error deleting API key.",
-			Detail:  err.Error(),
-		})
-		return
-	}
-
-	// Deployments should not host app tokens on the same domain as the
-	// primary deployment. But in the case they are, we should also delete this
-	// token.
-	if appCookie, _ := r.Cookie(httpmw.DevURLSessionTokenCookie); appCookie != nil {
-		appCookieRemove := &http.Cookie{
-			// MaxAge < 0 means to delete the cookie now.
-			MaxAge: -1,
-			Name:   httpmw.DevURLSessionTokenCookie,
-			Path:   "/",
-			Domain: "." + api.AccessURL.Hostname(),
-		}
-		http.SetCookie(rw, appCookieRemove)
-
-		id, _, err := httpmw.SplitAPIToken(appCookie.Value)
-		if err == nil {
-			err = api.Database.DeleteAPIKeyByID(ctx, id)
-			if err != nil {
-				// Don't block logout, just log any errors.
-				api.Logger.Warn(r.Context(), "failed to delete devurl token on logout",
-					slog.Error(err),
-					slog.F("id", id),
-				)
-			}
-		}
-	}
-
-	// This code should be removed after Jan 1 2023.
-	// This code logs out of the old session cookie before we renamed it
-	// if it is a valid coder token. Otherwise, this old cookie hangs around
-	// and we never log out of the user.
-	oldCookie, err := r.Cookie("session_token")
-	if err == nil && oldCookie != nil {
-		_, _, err := httpmw.SplitAPIToken(oldCookie.Value)
-		if err == nil {
-			cookie := &http.Cookie{
-				// MaxAge < 0 means to delete the cookie now.
-				MaxAge: -1,
-				Name:   "session_token",
-				Path:   "/",
-			}
-			http.SetCookie(rw, cookie)
-		}
-	}
-
-	httpapi.Write(ctx, rw, http.StatusOK, codersdk.Response{
-		Message: "Logged out!",
-	})
+	httpapi.Write(ctx, rw, http.StatusOK, db2sdk.Organization(organization))
 }
 
 type CreateUserRequest struct {
-	codersdk.CreateUserRequest
-	LoginType database.LoginType
+	codersdk.CreateUserRequestWithOrgs
+	LoginType          database.LoginType
+	SkipNotifications  bool
+	accountCreatorName string
 }
 
-func (api *API) CreateUser(ctx context.Context, store database.Store, req CreateUserRequest) (database.User, uuid.UUID, error) {
+func (api *API) CreateUser(ctx context.Context, store database.Store, req CreateUserRequest) (database.User, error) {
+	// Ensure the username is valid. It's the caller's responsibility to ensure
+	// the username is valid and unique.
+	if usernameValid := codersdk.NameValid(req.Username); usernameValid != nil {
+		return database.User{}, xerrors.Errorf("invalid username %q: %w", req.Username, usernameValid)
+	}
+
 	var user database.User
-	return user, req.OrganizationID, store.InTx(func(tx database.Store) error {
+	err := store.InTx(func(tx database.Store) error {
 		orgRoles := make([]string, 0)
-		// If no organization is provided, create a new one for the user.
-		if req.OrganizationID == uuid.Nil {
-			organization, err := tx.InsertOrganization(ctx, database.InsertOrganizationParams{
-				ID:        uuid.New(),
-				Name:      req.Username,
-				CreatedAt: database.Now(),
-				UpdatedAt: database.Now(),
-			})
-			if err != nil {
-				return xerrors.Errorf("create organization: %w", err)
-			}
-			req.OrganizationID = organization.ID
-			orgRoles = append(orgRoles, rbac.RoleOrgAdmin(req.OrganizationID))
 
-			_, err = tx.InsertAllUsersGroup(ctx, organization.ID)
-			if err != nil {
-				return xerrors.Errorf("create %q group: %w", database.AllUsersGroup, err)
-			}
+		status := ""
+		if req.UserStatus != nil {
+			status = string(*req.UserStatus)
 		}
-
 		params := database.InsertUserParams{
-			ID:        uuid.New(),
-			Email:     req.Email,
-			Username:  req.Username,
-			CreatedAt: database.Now(),
-			UpdatedAt: database.Now(),
+			ID:             uuid.New(),
+			Email:          req.Email,
+			Username:       req.Username,
+			Name:           codersdk.NormalizeRealUsername(req.Name),
+			CreatedAt:      dbtime.Now(),
+			UpdatedAt:      dbtime.Now(),
+			HashedPassword: []byte{},
 			// All new users are defaulted to members of the site.
 			RBACRoles: []string{},
 			LoginType: req.LoginType,
+			Status:    status,
 		}
 		// If a user signs up with OAuth, they can have no password!
 		if req.Password != "" {
@@ -1070,132 +1389,98 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 		}
 		_, err = tx.InsertGitSSHKey(ctx, database.InsertGitSSHKeyParams{
 			UserID:     user.ID,
-			CreatedAt:  database.Now(),
-			UpdatedAt:  database.Now(),
+			CreatedAt:  dbtime.Now(),
+			UpdatedAt:  dbtime.Now(),
 			PrivateKey: privateKey,
 			PublicKey:  publicKey,
 		})
 		if err != nil {
 			return xerrors.Errorf("insert user gitsshkey: %w", err)
 		}
-		_, err = tx.InsertOrganizationMember(ctx, database.InsertOrganizationMemberParams{
-			OrganizationID: req.OrganizationID,
-			UserID:         user.ID,
-			CreatedAt:      database.Now(),
-			UpdatedAt:      database.Now(),
-			// By default give them membership to the organization.
-			Roles: orgRoles,
-		})
-		if err != nil {
-			return xerrors.Errorf("create organization member: %w", err)
+
+		for _, orgID := range req.OrganizationIDs {
+			_, err = tx.InsertOrganizationMember(ctx, database.InsertOrganizationMemberParams{
+				OrganizationID: orgID,
+				UserID:         user.ID,
+				CreatedAt:      dbtime.Now(),
+				UpdatedAt:      dbtime.Now(),
+				// By default give them membership to the organization.
+				Roles: orgRoles,
+			})
+			if err != nil {
+				return xerrors.Errorf("create organization member for %q: %w", orgID.String(), err)
+			}
 		}
+
 		return nil
-	})
+	}, nil)
+	if err != nil || req.SkipNotifications {
+		return user, err
+	}
+
+	userAdmins, err := findUserAdmins(ctx, store)
+	if err != nil {
+		return user, xerrors.Errorf("find user admins: %w", err)
+	}
+
+	for _, u := range userAdmins {
+		// nolint:gocritic // Need notifier actor to enqueue notifications
+		if _, err := api.NotificationsEnqueuer.Enqueue(dbauthz.AsNotifier(ctx), u.ID, notifications.TemplateUserAccountCreated,
+			map[string]string{
+				"created_account_name":      user.Username,
+				"created_account_user_name": user.Name,
+				"initiator":                 req.accountCreatorName,
+			}, "api-users-create",
+			user.ID,
+		); err != nil {
+			api.Logger.Warn(ctx, "unable to notify about created user", slog.F("created_user", user.Username), slog.Error(err))
+		}
+	}
+
+	return user, err
 }
 
-func convertUser(user database.User, organizationIDs []uuid.UUID) codersdk.User {
-	convertedUser := codersdk.User{
-		ID:              user.ID,
-		Email:           user.Email,
-		CreatedAt:       user.CreatedAt,
-		LastSeenAt:      user.LastSeenAt,
-		Username:        user.Username,
-		Status:          codersdk.UserStatus(user.Status),
-		OrganizationIDs: organizationIDs,
-		Roles:           make([]codersdk.Role, 0, len(user.RBACRoles)),
-		AvatarURL:       user.AvatarURL.String,
+// findUserAdmins fetches all users with user admin permission including owners.
+func findUserAdmins(ctx context.Context, store database.Store) ([]database.GetUsersRow, error) {
+	// Notice: we can't scrape the user information in parallel as pq
+	// fails with: unexpected describe rows response: 'D'
+	owners, err := store.GetUsers(ctx, database.GetUsersParams{
+		RbacRole: []string{codersdk.RoleOwner},
+	})
+	if err != nil {
+		return nil, xerrors.Errorf("get owners: %w", err)
 	}
-
-	for _, roleName := range user.RBACRoles {
-		rbacRole, _ := rbac.RoleByName(roleName)
-		convertedUser.Roles = append(convertedUser.Roles, convertRole(rbacRole))
+	userAdmins, err := store.GetUsers(ctx, database.GetUsersParams{
+		RbacRole: []string{codersdk.RoleUserAdmin},
+	})
+	if err != nil {
+		return nil, xerrors.Errorf("get user admins: %w", err)
 	}
-
-	return convertedUser
+	return append(owners, userAdmins...), nil
 }
 
 func convertUsers(users []database.User, organizationIDsByUserID map[uuid.UUID][]uuid.UUID) []codersdk.User {
 	converted := make([]codersdk.User, 0, len(users))
 	for _, u := range users {
 		userOrganizationIDs := organizationIDsByUserID[u.ID]
-		converted = append(converted, convertUser(u, userOrganizationIDs))
+		converted = append(converted, db2sdk.User(u, userOrganizationIDs))
 	}
 	return converted
 }
 
 func userOrganizationIDs(ctx context.Context, api *API, user database.User) ([]uuid.UUID, error) {
 	organizationIDsByMemberIDsRows, err := api.Database.GetOrganizationIDsByMemberIDs(ctx, []uuid.UUID{user.ID})
-	if errors.Is(err, sql.ErrNoRows) || len(organizationIDsByMemberIDsRows) == 0 {
-		return []uuid.UUID{}, nil
-	}
 	if err != nil {
 		return []uuid.UUID{}, err
 	}
+
+	// If you are in no orgs, then return an empty list.
+	if len(organizationIDsByMemberIDsRows) == 0 {
+		return []uuid.UUID{}, nil
+	}
+
 	member := organizationIDsByMemberIDsRows[0]
 	return member.OrganizationIDs, nil
-}
-
-func findUser(id uuid.UUID, users []database.User) *database.User {
-	for _, u := range users {
-		if u.ID == id {
-			return &u
-		}
-	}
-	return nil
-}
-
-func userSearchQuery(query string) (database.GetUsersParams, []codersdk.ValidationError) {
-	searchParams := make(url.Values)
-	if query == "" {
-		// No filter
-		return database.GetUsersParams{}, nil
-	}
-	query = strings.ToLower(query)
-	// Because we do this in 2 passes, we want to maintain quotes on the first
-	// pass.Further splitting occurs on the second pass and quotes will be
-	// dropped.
-	elements := splitQueryParameterByDelimiter(query, ' ', true)
-	for _, element := range elements {
-		parts := splitQueryParameterByDelimiter(element, ':', false)
-		switch len(parts) {
-		case 1:
-			// No key:value pair.
-			searchParams.Set("search", parts[0])
-		case 2:
-			searchParams.Set(parts[0], parts[1])
-		default:
-			return database.GetUsersParams{}, []codersdk.ValidationError{
-				{Field: "q", Detail: fmt.Sprintf("Query element %q can only contain 1 ':'", element)},
-			}
-		}
-	}
-
-	parser := httpapi.NewQueryParamParser()
-	filter := database.GetUsersParams{
-		Search:   parser.String(searchParams, "", "search"),
-		Status:   httpapi.ParseCustom(parser, searchParams, []database.UserStatus{}, "status", parseUserStatus),
-		RbacRole: parser.Strings(searchParams, []string{}, "role"),
-	}
-
-	return filter, parser.Errors
-}
-
-// parseUserStatus ensures proper enums are used for user statuses
-func parseUserStatus(v string) ([]database.UserStatus, error) {
-	var statuses []database.UserStatus
-	if v == "" {
-		return statuses, nil
-	}
-	parts := strings.Split(v, ",")
-	for _, part := range parts {
-		switch database.UserStatus(part) {
-		case database.UserStatusActive, database.UserStatusSuspended:
-			statuses = append(statuses, database.UserStatus(part))
-		default:
-			return []database.UserStatus{}, xerrors.Errorf("%q is not a valid user status", part)
-		}
-	}
-	return statuses, nil
 }
 
 func convertAPIKey(k database.APIKey) codersdk.APIKey {
@@ -1207,6 +1492,8 @@ func convertAPIKey(k database.APIKey) codersdk.APIKey {
 		CreatedAt:       k.CreatedAt,
 		UpdatedAt:       k.UpdatedAt,
 		LoginType:       codersdk.LoginType(k.LoginType),
+		Scope:           codersdk.APIKeyScope(k.Scope),
 		LifetimeSeconds: k.LifetimeSeconds,
+		TokenName:       k.TokenName,
 	}
 }

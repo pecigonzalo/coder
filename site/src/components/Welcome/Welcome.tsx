@@ -1,48 +1,29 @@
-import { makeStyles } from "@material-ui/core/styles"
-import Typography from "@material-ui/core/Typography"
-import { FC, PropsWithChildren } from "react"
-import { CoderIcon } from "../Icons/CoderIcon"
+import type { FC, PropsWithChildren } from "react";
+import { CoderIcon } from "../Icons/CoderIcon";
 
 const Language = {
-  defaultMessage: (
-    <>
-      Welcome to <strong>Coder</strong>
-    </>
-  ),
-}
+	defaultMessage: (
+		<>
+			Welcome to <strong>Coder</strong>
+		</>
+	),
+};
 
-export const Welcome: FC<
-  PropsWithChildren<{ message?: JSX.Element | string }>
-> = ({ message = Language.defaultMessage }) => {
-  const styles = useStyles()
+type WelcomeProps = Readonly<
+	PropsWithChildren<{
+		className?: string;
+	}>
+>;
+export const Welcome: FC<WelcomeProps> = ({ children, className }) => {
+	return (
+		<div className={className}>
+			<div className="flex justify-center pb-1">
+				<CoderIcon className="w-12 h-12" />
+			</div>
 
-  return (
-    <div>
-      <div className={styles.logoBox}>
-        <CoderIcon className={styles.logo} />
-      </div>
-      <Typography className={styles.title} variant="h1">
-        {message}
-      </Typography>
-    </div>
-  )
-}
-
-const useStyles = makeStyles((theme) => ({
-  logoBox: {
-    display: "flex",
-    justifyContent: "center",
-  },
-  logo: {
-    width: 80,
-    height: 56,
-    color: theme.palette.text.primary,
-  },
-  title: {
-    fontSize: 24,
-    letterSpacing: -0.3,
-    marginBottom: theme.spacing(3),
-    marginTop: theme.spacing(6),
-    textAlign: "center",
-  },
-}))
+			<h1 className="text-center text-3xl font-normal m-0 leading-[1.1] pb-4 [&_strong]:font-semibold">
+				{children || Language.defaultMessage}
+			</h1>
+		</div>
+	);
+};

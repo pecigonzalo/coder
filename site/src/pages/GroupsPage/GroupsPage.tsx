@@ -1,37 +1,40 @@
-import { useMachine } from "@xstate/react"
-import { useFeatureVisibility } from "hooks/useFeatureVisibility"
-import { useOrganizationId } from "hooks/useOrganizationId"
-import { usePermissions } from "hooks/usePermissions"
-import React from "react"
-import { Helmet } from "react-helmet-async"
-import { pageTitle } from "util/page"
-import { groupsMachine } from "xServices/groups/groupsXService"
-import GroupsPageView from "./GroupsPageView"
+import { getErrorMessage } from "api/errors";
+import { groupsByOrganization } from "api/queries/groups";
+import { displayError } from "components/GlobalSnackbar/utils";
+import { useAuthenticated } from "contexts/auth/RequireAuth";
+import { useFeatureVisibility } from "modules/dashboard/useFeatureVisibility";
+import { type FC, useEffect } from "react";
+import { Helmet } from "react-helmet-async";
+import { useQuery } from "react-query";
+import { pageTitle } from "utils/page";
+import GroupsPageView from "./GroupsPageView";
 
-export const GroupsPage: React.FC = () => {
-  const organizationId = useOrganizationId()
-  const [state] = useMachine(groupsMachine, {
-    context: {
-      organizationId,
-    },
-  })
-  const { groups } = state.context
-  const { createGroup: canCreateGroup } = usePermissions()
-  const { rbac: isRBACEnabled } = useFeatureVisibility()
+export const GroupsPage: FC = () => {
+	const { permissions } = useAuthenticated();
+	const { template_rbac: isTemplateRBACEnabled } = useFeatureVisibility();
+	const groupsQuery = useQuery(groupsByOrganization("default"));
 
-  return (
-    <>
-      <Helmet>
-        <title>{pageTitle("Groups")}</title>
-      </Helmet>
+	useEffect(() => {
+		if (groupsQuery.error) {
+			displayError(
+				getErrorMessage(groupsQuery.error, "Unable to load groups."),
+			);
+		}
+	}, [groupsQuery.error]);
 
-      <GroupsPageView
-        groups={groups}
-        canCreateGroup={canCreateGroup}
-        isRBACEnabled={isRBACEnabled}
-      />
-    </>
-  )
-}
+	return (
+		<>
+			<Helmet>
+				<title>{pageTitle("Groups")}</title>
+			</Helmet>
 
-export default GroupsPage
+			<GroupsPageView
+				groups={groupsQuery.data}
+				canCreateGroup={permissions.createGroup}
+				isTemplateRBACEnabled={isTemplateRBACEnabled}
+			/>
+		</>
+	);
+};
+
+export default GroupsPage;

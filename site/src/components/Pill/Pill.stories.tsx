@@ -1,57 +1,82 @@
-import { Story } from "@storybook/react"
-import { Pill, PillProps } from "./Pill"
+import InfoOutlined from "@mui/icons-material/InfoOutlined";
+import type { Meta, StoryObj } from "@storybook/react";
+import { Pill, PillSpinner } from "./Pill";
 
-export default {
-  title: "components/Pill",
-  component: Pill,
-}
+const meta: Meta<typeof Pill> = {
+	title: "components/Pill",
+	component: Pill,
+	args: {
+		children: "Default",
+	},
+};
 
-const Template: Story<PillProps> = (args) => <Pill {...args} />
+export default meta;
+type Story = StoryObj<typeof Pill>;
 
-export const Primary = Template.bind({})
-Primary.args = {
-  text: "Primary",
-  type: "primary",
-}
+export const Default: Story = {};
 
-export const Secondary = Template.bind({})
-Secondary.args = {
-  text: "Secondary",
-  type: "secondary",
-}
+export const Danger: Story = {
+	args: {
+		children: "Danger",
+		type: "danger",
+	},
+};
 
-export const Success = Template.bind({})
-Success.args = {
-  text: "Success",
-  type: "success",
-}
+export const WithError: Story = {
+	args: {
+		children: "Error",
+		type: "error",
+	},
+};
 
-export const Info = Template.bind({})
-Info.args = {
-  text: "Information",
-  type: "info",
-}
+export const Warning: Story = {
+	args: {
+		children: "Warning",
+		type: "warning",
+	},
+};
 
-export const Warning = Template.bind({})
-Warning.args = {
-  text: "Warning",
-  type: "warning",
-}
+export const Notice: Story = {
+	args: {
+		children: "Notice",
+		type: "notice",
+	},
+};
 
-export const Error = Template.bind({})
-Error.args = {
-  text: "Error",
-  type: "error",
-}
+export const Info: Story = {
+	args: {
+		children: "Information",
+		type: "info",
+	},
+};
 
-export const Default = Template.bind({})
-Default.args = {
-  text: "Default",
-}
+export const Success: Story = {
+	args: {
+		children: "Success",
+		type: "success",
+	},
+};
 
-export const WarningLight = Template.bind({})
-WarningLight.args = {
-  text: "Warning",
-  type: "warning",
-  lightBorder: true,
-}
+export const Active: Story = {
+	args: {
+		children: "Active",
+		type: "active",
+	},
+};
+
+export const WithIcon: Story = {
+	args: {
+		children: "Information",
+		type: "info",
+		icon: <InfoOutlined />,
+	},
+};
+
+export const WithSpinner: Story = {
+	args: {
+		icon: <PillSpinner />,
+	},
+	parameters: {
+		chromatic: { delay: 700 },
+	},
+};

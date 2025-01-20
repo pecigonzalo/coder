@@ -2,15 +2,13 @@ package httpmw
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 type templateParamContextKey struct{}
@@ -29,12 +27,12 @@ func ExtractTemplateParam(db database.Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-			templateID, parsed := parseUUID(rw, r, "template")
+			templateID, parsed := ParseUUIDParam(rw, r, "template")
 			if !parsed {
 				return
 			}
 			template, err := db.GetTemplateByID(r.Context(), templateID)
-			if errors.Is(err, sql.ErrNoRows) || (err == nil && template.Deleted) {
+			if httpapi.Is404Error(err) || (err == nil && template.Deleted) {
 				httpapi.ResourceNotFound(rw)
 				return
 			}

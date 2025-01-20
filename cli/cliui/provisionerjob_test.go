@@ -2,20 +2,24 @@ package cliui_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
+
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/serpent"
 )
 
 // This cannot be ran in parallel because it uses a signal.
@@ -25,70 +29,159 @@ func TestProvisionerJob(t *testing.T) {
 		t.Parallel()
 
 		test := newProvisionerJob(t)
-		go func() {
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		testutil.Go(t, func() {
 			<-test.Next
 			test.JobMutex.Lock()
 			test.Job.Status = codersdk.ProvisionerJobRunning
-			now := database.Now()
+			now := dbtime.Now()
 			test.Job.StartedAt = &now
 			test.JobMutex.Unlock()
 			<-test.Next
 			test.JobMutex.Lock()
 			test.Job.Status = codersdk.ProvisionerJobSucceeded
-			now = database.Now()
+			now = dbtime.Now()
 			test.Job.CompletedAt = &now
 			close(test.Logs)
 			test.JobMutex.Unlock()
-		}()
-		test.PTY.ExpectMatch("Queued")
-		test.Next <- struct{}{}
-		test.PTY.ExpectMatch("Queued")
-		test.PTY.ExpectMatch("Running")
-		test.Next <- struct{}{}
-		test.PTY.ExpectMatch("Running")
+		})
+		testutil.Eventually(ctx, t, func(ctx context.Context) (done bool) {
+			test.PTY.ExpectMatch(cliui.ProvisioningStateQueued)
+			test.Next <- struct{}{}
+			test.PTY.ExpectMatch(cliui.ProvisioningStateQueued)
+			test.PTY.ExpectMatch(cliui.ProvisioningStateRunning)
+			test.Next <- struct{}{}
+			test.PTY.ExpectMatch(cliui.ProvisioningStateRunning)
+			return true
+		}, testutil.IntervalFast)
 	})
 
 	t.Run("Stages", func(t *testing.T) {
 		t.Parallel()
 
 		test := newProvisionerJob(t)
-		go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		testutil.Go(t, func() {
 			<-test.Next
 			test.JobMutex.Lock()
 			test.Job.Status = codersdk.ProvisionerJobRunning
-			now := database.Now()
+			now := dbtime.Now()
 			test.Job.StartedAt = &now
 			test.Logs <- codersdk.ProvisionerJobLog{
-				CreatedAt: database.Now(),
+				CreatedAt: dbtime.Now(),
 				Stage:     "Something",
 			}
 			test.JobMutex.Unlock()
 			<-test.Next
 			test.JobMutex.Lock()
 			test.Job.Status = codersdk.ProvisionerJobSucceeded
-			now = database.Now()
+			now = dbtime.Now()
 			test.Job.CompletedAt = &now
 			close(test.Logs)
 			test.JobMutex.Unlock()
-		}()
-		test.PTY.ExpectMatch("Queued")
-		test.Next <- struct{}{}
-		test.PTY.ExpectMatch("Queued")
-		test.PTY.ExpectMatch("Something")
-		test.Next <- struct{}{}
-		test.PTY.ExpectMatch("Something")
+		})
+		testutil.Eventually(ctx, t, func(ctx context.Context) (done bool) {
+			test.PTY.ExpectMatch(cliui.ProvisioningStateQueued)
+			test.Next <- struct{}{}
+			test.PTY.ExpectMatch(cliui.ProvisioningStateQueued)
+			test.PTY.ExpectMatch("Something")
+			test.Next <- struct{}{}
+			test.PTY.ExpectMatch("Something")
+			return true
+		}, testutil.IntervalFast)
+	})
+
+	t.Run("Queue Position", func(t *testing.T) {
+		t.Parallel()
+
+		stage := cliui.ProvisioningStateQueued
+
+		tests := []struct {
+			name     string
+			queuePos int
+			expected string
+		}{
+			{
+				name:     "first",
+				queuePos: 0,
+				expected: fmt.Sprintf("%s$", stage),
+			},
+			{
+				name:     "next",
+				queuePos: 1,
+				expected: fmt.Sprintf(`%s %s$`, stage, regexp.QuoteMeta("(next)")),
+			},
+			{
+				name:     "other",
+				queuePos: 4,
+				expected: fmt.Sprintf(`%s %s$`, stage, regexp.QuoteMeta("(position: 4)")),
+			},
+		}
+
+		for _, tc := range tests {
+			tc := tc
+
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				test := newProvisionerJob(t)
+				test.JobMutex.Lock()
+				test.Job.QueuePosition = tc.queuePos
+				test.Job.QueueSize = tc.queuePos
+				test.JobMutex.Unlock()
+
+				ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+				defer cancel()
+
+				testutil.Go(t, func() {
+					<-test.Next
+					test.JobMutex.Lock()
+					test.Job.Status = codersdk.ProvisionerJobRunning
+					now := dbtime.Now()
+					test.Job.StartedAt = &now
+					test.JobMutex.Unlock()
+					<-test.Next
+					test.JobMutex.Lock()
+					test.Job.Status = codersdk.ProvisionerJobSucceeded
+					now = dbtime.Now()
+					test.Job.CompletedAt = &now
+					close(test.Logs)
+					test.JobMutex.Unlock()
+				})
+				testutil.Eventually(ctx, t, func(ctx context.Context) (done bool) {
+					test.PTY.ExpectRegexMatch(tc.expected)
+					test.Next <- struct{}{}
+					test.PTY.ExpectMatch(cliui.ProvisioningStateQueued) // step completed
+					test.PTY.ExpectMatch(cliui.ProvisioningStateRunning)
+					test.Next <- struct{}{}
+					test.PTY.ExpectMatch(cliui.ProvisioningStateRunning)
+					return true
+				}, testutil.IntervalFast)
+			})
+		}
 	})
 
 	// This cannot be ran in parallel because it uses a signal.
 	// nolint:paralleltest
 	t.Run("Cancel", func(t *testing.T) {
+		t.Skip("This test issues an interrupt signal which will propagate to the test runner.")
+
 		if runtime.GOOS == "windows" {
 			// Sending interrupt signal isn't supported on Windows!
 			t.SkipNow()
 		}
 
 		test := newProvisionerJob(t)
-		go func() {
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		testutil.Go(t, func() {
 			<-test.Next
 			currentProcess, err := os.FindProcess(os.Getpid())
 			assert.NoError(t, err)
@@ -97,16 +190,19 @@ func TestProvisionerJob(t *testing.T) {
 			<-test.Next
 			test.JobMutex.Lock()
 			test.Job.Status = codersdk.ProvisionerJobCanceled
-			now := database.Now()
+			now := dbtime.Now()
 			test.Job.CompletedAt = &now
 			close(test.Logs)
 			test.JobMutex.Unlock()
-		}()
-		test.PTY.ExpectMatch("Queued")
-		test.Next <- struct{}{}
-		test.PTY.ExpectMatch("Gracefully canceling")
-		test.Next <- struct{}{}
-		test.PTY.ExpectMatch("Queued")
+		})
+		testutil.Eventually(ctx, t, func(ctx context.Context) (done bool) {
+			test.PTY.ExpectMatch(cliui.ProvisioningStateQueued)
+			test.Next <- struct{}{}
+			test.PTY.ExpectMatch("Gracefully canceling")
+			test.Next <- struct{}{}
+			test.PTY.ExpectMatch(cliui.ProvisioningStateQueued)
+			return true
+		}, testutil.IntervalFast)
 	})
 }
 
@@ -121,13 +217,13 @@ type provisionerJobTest struct {
 func newProvisionerJob(t *testing.T) provisionerJobTest {
 	job := &codersdk.ProvisionerJob{
 		Status:    codersdk.ProvisionerJobPending,
-		CreatedAt: database.Now(),
+		CreatedAt: dbtime.Now(),
 	}
 	jobLock := sync.Mutex{}
 	logs := make(chan codersdk.ProvisionerJobLog, 1)
-	cmd := &cobra.Command{
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return cliui.ProvisionerJob(cmd.Context(), cmd.OutOrStdout(), cliui.ProvisionerJobOptions{
+	cmd := &serpent.Command{
+		Handler: func(inv *serpent.Invocation) error {
+			return cliui.ProvisionerJob(inv.Context(), inv.Stdout, cliui.ProvisionerJobOptions{
 				FetchInterval: time.Millisecond,
 				Fetch: func() (codersdk.ProvisionerJob, error) {
 					jobLock.Lock()
@@ -145,13 +241,14 @@ func newProvisionerJob(t *testing.T) provisionerJobTest {
 			})
 		},
 	}
+	inv := cmd.Invoke()
+
 	ptty := ptytest.New(t)
-	cmd.SetOutput(ptty.Output())
-	cmd.SetIn(ptty.Input())
+	ptty.Attach(inv)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		err := cmd.ExecuteContext(context.Background())
+		err := inv.WithContext(context.Background()).Run()
 		if err != nil {
 			assert.ErrorIs(t, err, cliui.Canceled)
 		}

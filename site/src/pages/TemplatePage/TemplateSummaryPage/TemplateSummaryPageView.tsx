@@ -1,90 +1,52 @@
-import { makeStyles } from "@material-ui/core/styles"
-import {
-  Template,
-  TemplateDAUsResponse,
-  TemplateVersion,
-  WorkspaceResource,
-} from "api/typesGenerated"
-import { AlertBanner } from "components/AlertBanner/AlertBanner"
-import { Markdown } from "components/Markdown/Markdown"
-import { Stack } from "components/Stack/Stack"
-import { TemplateResourcesTable } from "components/TemplateResourcesTable/TemplateResourcesTable"
-import { TemplateStats } from "components/TemplateStats/TemplateStats"
-import { VersionsTable } from "components/VersionsTable/VersionsTable"
-import { WorkspaceSection } from "components/WorkspaceSection/WorkspaceSection"
-import frontMatter from "front-matter"
-import { FC } from "react"
-import { DAUChart } from "./DAUChart"
-
-const Language = {
-  readmeTitle: "README",
-  resourcesTitle: "Resources",
-}
+import type {
+	Template,
+	TemplateVersion,
+	WorkspaceResource,
+} from "api/typesGenerated";
+import { Loader } from "components/Loader/Loader";
+import { Stack } from "components/Stack/Stack";
+import { TemplateResourcesTable } from "modules/templates/TemplateResourcesTable/TemplateResourcesTable";
+import { type FC, useEffect } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { TemplateStats } from "./TemplateStats";
 
 export interface TemplateSummaryPageViewProps {
-  template: Template
-  activeTemplateVersion: TemplateVersion
-  templateResources: WorkspaceResource[]
-  templateVersions?: TemplateVersion[]
-  templateDAUs?: TemplateDAUsResponse
-  deleteTemplateError: Error | unknown
+	resources?: WorkspaceResource[];
+	template: Template;
+	activeVersion: TemplateVersion;
 }
 
-export const TemplateSummaryPageView: FC<
-  React.PropsWithChildren<TemplateSummaryPageViewProps>
-> = ({
-  template,
-  activeTemplateVersion,
-  templateResources,
-  templateVersions,
-  templateDAUs,
-  deleteTemplateError,
+export const TemplateSummaryPageView: FC<TemplateSummaryPageViewProps> = ({
+	resources,
+	template,
+	activeVersion,
 }) => {
-  const styles = useStyles()
-  const readme = frontMatter(activeTemplateVersion.readme)
+	const navigate = useNavigate();
+	const location = useLocation();
 
-  const deleteError = deleteTemplateError ? (
-    <AlertBanner severity="error" error={deleteTemplateError} dismissible />
-  ) : null
+	// biome-ignore lint/correctness/useExhaustiveDependencies: consider refactoring
+	useEffect(() => {
+		if (location.hash === "#readme") {
+			// We moved the readme to the docs page, but we known that some users
+			// have bookmarked the readme or linked it elsewhere. Redirect them to the docs page.
+			navigate("docs", { replace: true });
+		}
+	}, [template, navigate, location]);
 
-  const getStartedResources = (resources: WorkspaceResource[]) => {
-    return resources.filter(
-      (resource) => resource.workspace_transition === "start",
-    )
-  }
+	if (!resources) {
+		return <Loader />;
+	}
 
-  return (
-    <Stack spacing={2.5}>
-      {deleteError}
-      {templateDAUs && <DAUChart templateDAUs={templateDAUs} />}
-      <TemplateStats
-        template={template}
-        activeVersion={activeTemplateVersion}
-      />
-      <TemplateResourcesTable
-        resources={getStartedResources(templateResources)}
-      />
-      <WorkspaceSection
-        title={Language.readmeTitle}
-        contentsProps={{ className: styles.readmeContents }}
-      >
-        <div className={styles.markdownWrapper}>
-          <Markdown>{readme.body}</Markdown>
-        </div>
-      </WorkspaceSection>
-      <VersionsTable versions={templateVersions} />
-    </Stack>
-  )
-}
+	const getStartedResources = (resources: WorkspaceResource[]) => {
+		return resources.filter(
+			(resource) => resource.workspace_transition === "start",
+		);
+	};
 
-export const useStyles = makeStyles((theme) => {
-  return {
-    readmeContents: {
-      margin: 0,
-    },
-    markdownWrapper: {
-      background: theme.palette.background.paper,
-      padding: theme.spacing(3, 4),
-    },
-  }
-})
+	return (
+		<Stack spacing={4}>
+			<TemplateStats template={template} activeVersion={activeVersion} />
+			<TemplateResourcesTable resources={getStartedResources(resources)} />
+		</Stack>
+	);
+};

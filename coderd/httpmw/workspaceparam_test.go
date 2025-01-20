@@ -10,17 +10,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/databasefake"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/cryptorand"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbgen"
+	"github.com/coder/coder/v2/coderd/database/dbmem"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/cryptorand"
 )
 
 func TestWorkspaceParam(t *testing.T) {
@@ -32,7 +33,7 @@ func TestWorkspaceParam(t *testing.T) {
 			hashed     = sha256.Sum256([]byte(secret))
 		)
 		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set(codersdk.SessionCustomHeader, fmt.Sprintf("%s-%s", id, secret))
+		r.Header.Set(codersdk.SessionTokenHeader, fmt.Sprintf("%s-%s", id, secret))
 
 		userID := uuid.New()
 		username, err := cryptorand.String(8)
@@ -42,8 +43,16 @@ func TestWorkspaceParam(t *testing.T) {
 			Email:          "testaccount@coder.com",
 			HashedPassword: hashed[:],
 			Username:       username,
-			CreatedAt:      database.Now(),
-			UpdatedAt:      database.Now(),
+			CreatedAt:      dbtime.Now(),
+			UpdatedAt:      dbtime.Now(),
+			LoginType:      database.LoginTypePassword,
+		})
+		require.NoError(t, err)
+
+		user, err = db.UpdateUserStatus(context.Background(), database.UpdateUserStatusParams{
+			ID:        user.ID,
+			Status:    database.UserStatusActive,
+			UpdatedAt: dbtime.Now(),
 		})
 		require.NoError(t, err)
 
@@ -51,8 +60,8 @@ func TestWorkspaceParam(t *testing.T) {
 			ID:           id,
 			UserID:       user.ID,
 			HashedSecret: hashed[:],
-			LastUsed:     database.Now(),
-			ExpiresAt:    database.Now().Add(time.Minute),
+			LastUsed:     dbtime.Now(),
+			ExpiresAt:    dbtime.Now().Add(time.Minute),
 			LoginType:    database.LoginTypePassword,
 			Scope:        database.APIKeyScopeAll,
 		})
@@ -66,7 +75,7 @@ func TestWorkspaceParam(t *testing.T) {
 
 	t.Run("None", func(t *testing.T) {
 		t.Parallel()
-		db := databasefake.New()
+		db := dbmem.New()
 		rtr := chi.NewRouter()
 		rtr.Use(httpmw.ExtractWorkspaceParam(db))
 		rtr.Get("/", nil)
@@ -81,7 +90,7 @@ func TestWorkspaceParam(t *testing.T) {
 
 	t.Run("NotFound", func(t *testing.T) {
 		t.Parallel()
-		db := databasefake.New()
+		db := dbmem.New()
 		rtr := chi.NewRouter()
 		rtr.Use(httpmw.ExtractWorkspaceParam(db))
 		rtr.Get("/", nil)
@@ -97,10 +106,10 @@ func TestWorkspaceParam(t *testing.T) {
 
 	t.Run("Found", func(t *testing.T) {
 		t.Parallel()
-		db := databasefake.New()
+		db := dbmem.New()
 		rtr := chi.NewRouter()
 		rtr.Use(
-			httpmw.ExtractAPIKey(httpmw.ExtractAPIKeyConfig{
+			httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
 				DB:              db,
 				RedirectToLogin: false,
 			}),
@@ -112,9 +121,10 @@ func TestWorkspaceParam(t *testing.T) {
 		})
 		r, user := setup(db)
 		workspace, err := db.InsertWorkspace(context.Background(), database.InsertWorkspaceParams{
-			ID:      uuid.New(),
-			OwnerID: user.ID,
-			Name:    "hello",
+			ID:               uuid.New(),
+			OwnerID:          user.ID,
+			Name:             "hello",
+			AutomaticUpdates: database.AutomaticUpdatesNever,
 		})
 		require.NoError(t, err)
 		chi.RouteContext(r.Context()).URLParams.Add("workspace", workspace.ID.String())
@@ -301,7 +311,7 @@ func TestWorkspaceAgentByNameParam(t *testing.T) {
 
 			rtr := chi.NewRouter()
 			rtr.Use(
-				httpmw.ExtractAPIKey(httpmw.ExtractAPIKeyConfig{
+				httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
 					DB:              db,
 					RedirectToLogin: true,
 				}),
@@ -338,74 +348,45 @@ type setupConfig struct {
 
 func setupWorkspaceWithAgents(t testing.TB, cfg setupConfig) (database.Store, *http.Request) {
 	t.Helper()
-	db := databasefake.New()
+	db := dbmem.New()
+
 	var (
-		id, secret = randomAPIKeyParts()
-		hashed     = sha256.Sum256([]byte(secret))
+		user     = dbgen.User(t, db, database.User{})
+		_, token = dbgen.APIKey(t, db, database.APIKey{
+			UserID: user.ID,
+		})
+		workspace = dbgen.Workspace(t, db, database.WorkspaceTable{
+			OwnerID: user.ID,
+			Name:    cfg.WorkspaceName,
+		})
+		build = dbgen.WorkspaceBuild(t, db, database.WorkspaceBuild{
+			WorkspaceID: workspace.ID,
+			Transition:  database.WorkspaceTransitionStart,
+			Reason:      database.BuildReasonInitiator,
+		})
+		job = dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+			ID:            build.JobID,
+			Type:          database.ProvisionerJobTypeWorkspaceBuild,
+			Provisioner:   database.ProvisionerTypeEcho,
+			StorageMethod: database.ProvisionerStorageMethodFile,
+		})
 	)
+
 	r := httptest.NewRequest("GET", "/", nil)
-	r.Header.Set(codersdk.SessionCustomHeader, fmt.Sprintf("%s-%s", id, secret))
-
-	userID := uuid.New()
-	username, err := cryptorand.String(8)
-	require.NoError(t, err)
-	user, err := db.InsertUser(r.Context(), database.InsertUserParams{
-		ID:             userID,
-		Email:          "testaccount@coder.com",
-		HashedPassword: hashed[:],
-		Username:       username,
-		CreatedAt:      database.Now(),
-		UpdatedAt:      database.Now(),
-	})
-	require.NoError(t, err)
-
-	_, err = db.InsertAPIKey(r.Context(), database.InsertAPIKeyParams{
-		ID:           id,
-		UserID:       user.ID,
-		HashedSecret: hashed[:],
-		LastUsed:     database.Now(),
-		ExpiresAt:    database.Now().Add(time.Minute),
-		LoginType:    database.LoginTypePassword,
-		Scope:        database.APIKeyScopeAll,
-	})
-	require.NoError(t, err)
-
-	workspace, err := db.InsertWorkspace(context.Background(), database.InsertWorkspaceParams{
-		ID:         uuid.New(),
-		TemplateID: uuid.New(),
-		OwnerID:    user.ID,
-		Name:       cfg.WorkspaceName,
-	})
-	require.NoError(t, err)
-
-	build, err := db.InsertWorkspaceBuild(context.Background(), database.InsertWorkspaceBuildParams{
-		ID:          uuid.New(),
-		WorkspaceID: workspace.ID,
-		JobID:       uuid.New(),
-	})
-	require.NoError(t, err)
-
-	job, err := db.InsertProvisionerJob(context.Background(), database.InsertProvisionerJobParams{
-		ID:   build.JobID,
-		Type: database.ProvisionerJobTypeWorkspaceBuild,
-	})
-	require.NoError(t, err)
+	r.Header.Set(codersdk.SessionTokenHeader, token)
 
 	for resourceName, agentNames := range cfg.Agents {
-		resource, err := db.InsertWorkspaceResource(context.Background(), database.InsertWorkspaceResourceParams{
-			ID:    uuid.New(),
-			JobID: job.ID,
-			Name:  resourceName,
+		resource := dbgen.WorkspaceResource(t, db, database.WorkspaceResource{
+			JobID:      job.ID,
+			Name:       resourceName,
+			Transition: database.WorkspaceTransitionStart,
 		})
-		require.NoError(t, err)
 
 		for _, name := range agentNames {
-			_, err = db.InsertWorkspaceAgent(context.Background(), database.InsertWorkspaceAgentParams{
-				ID:         uuid.New(),
+			_ = dbgen.WorkspaceAgent(t, db, database.WorkspaceAgent{
 				ResourceID: resource.ID,
 				Name:       name,
 			})
-			require.NoError(t, err)
 		}
 	}
 

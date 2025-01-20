@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/util/tz"
+	"github.com/coder/coder/v2/coderd/util/tz"
 )
 
 //nolint:paralleltest // Environment variables
@@ -30,6 +30,10 @@ func Test_TimezoneIANA(t *testing.T) {
 		if runtime.GOOS == "linux" && err != nil {
 			// Not all Linux operating systems are guaranteed to have localtime!
 			t.Skip("localtime doesn't exist!")
+		}
+		if runtime.GOOS == "windows" {
+			// This test can be flaky on some Windows runners :(
+			t.Skip("This test is flaky under Windows.")
 		}
 		oldEnv, found := os.LookupEnv("TZ")
 		if found {

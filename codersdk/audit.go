@@ -14,19 +14,33 @@ import (
 type ResourceType string
 
 const (
-	ResourceTypeOrganization    ResourceType = "organization"
-	ResourceTypeTemplate        ResourceType = "template"
-	ResourceTypeTemplateVersion ResourceType = "template_version"
-	ResourceTypeUser            ResourceType = "user"
-	ResourceTypeWorkspace       ResourceType = "workspace"
-	ResourceTypeGitSSHKey       ResourceType = "git_ssh_key"
-	ResourceTypeAPIKey          ResourceType = "api_key"
+	ResourceTypeTemplate              ResourceType = "template"
+	ResourceTypeTemplateVersion       ResourceType = "template_version"
+	ResourceTypeUser                  ResourceType = "user"
+	ResourceTypeWorkspace             ResourceType = "workspace"
+	ResourceTypeWorkspaceBuild        ResourceType = "workspace_build"
+	ResourceTypeGitSSHKey             ResourceType = "git_ssh_key"
+	ResourceTypeAPIKey                ResourceType = "api_key"
+	ResourceTypeGroup                 ResourceType = "group"
+	ResourceTypeLicense               ResourceType = "license"
+	ResourceTypeConvertLogin          ResourceType = "convert_login"
+	ResourceTypeHealthSettings        ResourceType = "health_settings"
+	ResourceTypeNotificationsSettings ResourceType = "notifications_settings"
+	ResourceTypeWorkspaceProxy        ResourceType = "workspace_proxy"
+	ResourceTypeOrganization          ResourceType = "organization"
+	ResourceTypeOAuth2ProviderApp     ResourceType = "oauth2_provider_app"
+	// nolint:gosec // This is not a secret.
+	ResourceTypeOAuth2ProviderAppSecret     ResourceType = "oauth2_provider_app_secret"
+	ResourceTypeCustomRole                  ResourceType = "custom_role"
+	ResourceTypeOrganizationMember          ResourceType = "organization_member"
+	ResourceTypeNotificationTemplate        ResourceType = "notification_template"
+	ResourceTypeIdpSyncSettingsOrganization ResourceType = "idp_sync_settings_organization"
+	ResourceTypeIdpSyncSettingsGroup        ResourceType = "idp_sync_settings_group"
+	ResourceTypeIdpSyncSettingsRole         ResourceType = "idp_sync_settings_role"
 )
 
 func (r ResourceType) FriendlyString() string {
 	switch r {
-	case ResourceTypeOrganization:
-		return "organization"
 	case ResourceTypeTemplate:
 		return "template"
 	case ResourceTypeTemplateVersion:
@@ -35,10 +49,44 @@ func (r ResourceType) FriendlyString() string {
 		return "user"
 	case ResourceTypeWorkspace:
 		return "workspace"
+	case ResourceTypeWorkspaceBuild:
+		// workspace builds have a unique friendly string
+		// see coderd/audit.go:298 for explanation
+		return "workspace"
 	case ResourceTypeGitSSHKey:
 		return "git ssh key"
 	case ResourceTypeAPIKey:
-		return "api key"
+		return "token"
+	case ResourceTypeGroup:
+		return "group"
+	case ResourceTypeLicense:
+		return "license"
+	case ResourceTypeConvertLogin:
+		return "login type conversion"
+	case ResourceTypeWorkspaceProxy:
+		return "workspace proxy"
+	case ResourceTypeOrganization:
+		return "organization"
+	case ResourceTypeHealthSettings:
+		return "health_settings"
+	case ResourceTypeNotificationsSettings:
+		return "notifications_settings"
+	case ResourceTypeOAuth2ProviderApp:
+		return "oauth2 app"
+	case ResourceTypeOAuth2ProviderAppSecret:
+		return "oauth2 app secret"
+	case ResourceTypeCustomRole:
+		return "custom role"
+	case ResourceTypeOrganizationMember:
+		return "organization member"
+	case ResourceTypeNotificationTemplate:
+		return "notification template"
+	case ResourceTypeIdpSyncSettingsOrganization:
+		return "settings"
+	case ResourceTypeIdpSyncSettingsGroup:
+		return "settings"
+	case ResourceTypeIdpSyncSettingsRole:
+		return "settings"
 	default:
 		return "unknown"
 	}
@@ -47,12 +95,18 @@ func (r ResourceType) FriendlyString() string {
 type AuditAction string
 
 const (
-	AuditActionCreate AuditAction = "create"
-	AuditActionWrite  AuditAction = "write"
-	AuditActionDelete AuditAction = "delete"
+	AuditActionCreate               AuditAction = "create"
+	AuditActionWrite                AuditAction = "write"
+	AuditActionDelete               AuditAction = "delete"
+	AuditActionStart                AuditAction = "start"
+	AuditActionStop                 AuditAction = "stop"
+	AuditActionLogin                AuditAction = "login"
+	AuditActionLogout               AuditAction = "logout"
+	AuditActionRegister             AuditAction = "register"
+	AuditActionRequestPasswordReset AuditAction = "request_password_reset"
 )
 
-func (a AuditAction) FriendlyString() string {
+func (a AuditAction) Friendly() string {
 	switch a {
 	case AuditActionCreate:
 		return "created"
@@ -60,6 +114,18 @@ func (a AuditAction) FriendlyString() string {
 		return "updated"
 	case AuditActionDelete:
 		return "deleted"
+	case AuditActionStart:
+		return "started"
+	case AuditActionStop:
+		return "stopped"
+	case AuditActionLogin:
+		return "logged in"
+	case AuditActionLogout:
+		return "logged out"
+	case AuditActionRegister:
+		return "registered"
+	case AuditActionRequestPasswordReset:
+		return "password reset requested"
 	default:
 		return "unknown"
 	}
@@ -74,14 +140,13 @@ type AuditDiffField struct {
 }
 
 type AuditLog struct {
-	ID             uuid.UUID    `json:"id"`
-	RequestID      uuid.UUID    `json:"request_id"`
-	Time           time.Time    `json:"time"`
-	OrganizationID uuid.UUID    `json:"organization_id"`
-	IP             netip.Addr   `json:"ip"`
-	UserAgent      string       `json:"user_agent"`
-	ResourceType   ResourceType `json:"resource_type"`
-	ResourceID     uuid.UUID    `json:"resource_id"`
+	ID           uuid.UUID    `json:"id" format:"uuid"`
+	RequestID    uuid.UUID    `json:"request_id" format:"uuid"`
+	Time         time.Time    `json:"time" format:"date-time"`
+	IP           netip.Addr   `json:"ip"`
+	UserAgent    string       `json:"user_agent"`
+	ResourceType ResourceType `json:"resource_type"`
+	ResourceID   uuid.UUID    `json:"resource_id" format:"uuid"`
 	// ResourceTarget is the name of the resource.
 	ResourceTarget   string          `json:"resource_target"`
 	ResourceIcon     string          `json:"resource_icon"`
@@ -90,6 +155,13 @@ type AuditLog struct {
 	StatusCode       int32           `json:"status_code"`
 	AdditionalFields json.RawMessage `json:"additional_fields"`
 	Description      string          `json:"description"`
+	ResourceLink     string          `json:"resource_link"`
+	IsDeleted        bool            `json:"is_deleted"`
+
+	// Deprecated: Use 'organization.id' instead.
+	OrganizationID uuid.UUID `json:"organization_id" format:"uuid"`
+
+	Organization *MinimalOrganization `json:"organization,omitempty"`
 
 	User *User `json:"user"`
 }
@@ -101,20 +173,17 @@ type AuditLogsRequest struct {
 
 type AuditLogResponse struct {
 	AuditLogs []AuditLog `json:"audit_logs"`
-}
-
-type AuditLogCountRequest struct {
-	SearchQuery string `json:"q,omitempty"`
-}
-
-type AuditLogCountResponse struct {
-	Count int64 `json:"count"`
+	Count     int64      `json:"count"`
 }
 
 type CreateTestAuditLogRequest struct {
-	Action       AuditAction  `json:"action,omitempty"`
-	ResourceType ResourceType `json:"resource_type,omitempty"`
-	ResourceID   uuid.UUID    `json:"resource_id,omitempty"`
+	Action           AuditAction     `json:"action,omitempty" enums:"create,write,delete,start,stop"`
+	ResourceType     ResourceType    `json:"resource_type,omitempty" enums:"template,template_version,user,workspace,workspace_build,git_ssh_key,auditable_group"`
+	ResourceID       uuid.UUID       `json:"resource_id,omitempty" format:"uuid"`
+	AdditionalFields json.RawMessage `json:"additional_fields,omitempty"`
+	Time             time.Time       `json:"time,omitempty" format:"date-time"`
+	BuildReason      BuildReason     `json:"build_reason,omitempty" enums:"autostart,autostop,initiator"`
+	OrganizationID   uuid.UUID       `json:"organization_id,omitempty" format:"uuid"`
 }
 
 // AuditLogs retrieves audit logs from the given page.
@@ -134,7 +203,7 @@ func (c *Client) AuditLogs(ctx context.Context, req AuditLogsRequest) (AuditLogR
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return AuditLogResponse{}, readBodyAsError(res)
+		return AuditLogResponse{}, ReadBodyAsError(res)
 	}
 
 	var logRes AuditLogResponse
@@ -146,35 +215,8 @@ func (c *Client) AuditLogs(ctx context.Context, req AuditLogsRequest) (AuditLogR
 	return logRes, nil
 }
 
-// AuditLogCount returns the count of all audit logs in the product.
-func (c *Client) AuditLogCount(ctx context.Context, req AuditLogCountRequest) (AuditLogCountResponse, error) {
-	res, err := c.Request(ctx, http.MethodGet, "/api/v2/audit/count", nil, func(r *http.Request) {
-		q := r.URL.Query()
-		var params []string
-		if req.SearchQuery != "" {
-			params = append(params, req.SearchQuery)
-		}
-		q.Set("q", strings.Join(params, " "))
-		r.URL.RawQuery = q.Encode()
-	})
-	if err != nil {
-		return AuditLogCountResponse{}, err
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		return AuditLogCountResponse{}, readBodyAsError(res)
-	}
-
-	var logRes AuditLogCountResponse
-	err = json.NewDecoder(res.Body).Decode(&logRes)
-	if err != nil {
-		return AuditLogCountResponse{}, err
-	}
-
-	return logRes, nil
-}
-
+// CreateTestAuditLog creates a fake audit log. Only owners of the organization
+// can perform this action. It's used for testing purposes.
 func (c *Client) CreateTestAuditLog(ctx context.Context, req CreateTestAuditLogRequest) error {
 	res, err := c.Request(ctx, http.MethodPost, "/api/v2/audit/testgenerate", req)
 	if err != nil {

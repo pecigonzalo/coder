@@ -1,76 +1,42 @@
-import { screen } from "@testing-library/react"
-import { rest } from "msw"
-import * as CreateDayString from "util/createDayString"
-import { MockTemplate } from "../../testHelpers/entities"
-import { history, render } from "../../testHelpers/renderHelpers"
-import { server } from "../../testHelpers/server"
-import { TemplatesPage } from "./TemplatesPage"
-import { Language } from "./TemplatesPageView"
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { AppProviders } from "App";
+import { RequireAuth } from "contexts/auth/RequireAuth";
+import { RouterProvider, createMemoryRouter } from "react-router-dom";
+import TemplatesPage from "./TemplatesPage";
 
-describe("TemplatesPage", () => {
-  beforeEach(() => {
-    // Mocking the dayjs module within the createDayString file
-    const mock = jest.spyOn(CreateDayString, "createDayString")
-    mock.mockImplementation(() => "a minute ago")
-    history.replace("/workspaces")
-  })
-
-  it("renders an empty templates page", async () => {
-    // Given
-    server.use(
-      rest.get(
-        "/api/v2/organizations/:organizationId/templates",
-        (req, res, ctx) => {
-          return res(ctx.status(200), ctx.json([]))
-        },
-      ),
-      rest.post("/api/v2/authcheck", async (req, res, ctx) => {
-        return res(
-          ctx.status(200),
-          ctx.json({
-            createTemplates: true,
-          }),
-        )
-      }),
-    )
-
-    // When
-    render(<TemplatesPage />)
-
-    // Then
-    await screen.findByText(Language.emptyMessage)
-  })
-
-  it("renders a filled templates page", async () => {
-    // When
-    render(<TemplatesPage />)
-
-    // Then
-    await screen.findByText(MockTemplate.name)
-  })
-
-  it("shows empty view without permissions to create", async () => {
-    server.use(
-      rest.get(
-        "/api/v2/organizations/:organizationId/templates",
-        (req, res, ctx) => {
-          return res(ctx.status(200), ctx.json([]))
-        },
-      ),
-      rest.post("/api/v2/authcheck", async (req, res, ctx) => {
-        return res(
-          ctx.status(200),
-          ctx.json({
-            createTemplates: false,
-          }),
-        )
-      }),
-    )
-
-    // When
-    render(<TemplatesPage />)
-
-    // Then
-    await screen.findByText(Language.emptyViewNoPerms)
-  })
-})
+test("create template from scratch", async () => {
+	const user = userEvent.setup();
+	const router = createMemoryRouter(
+		[
+			{
+				element: <RequireAuth />,
+				children: [
+					{
+						path: "/templates",
+						element: <TemplatesPage />,
+					},
+					{
+						path: "/templates/new",
+						element: <div data-testid="new-template-page" />,
+					},
+				],
+			},
+		],
+		{ initialEntries: ["/templates"] },
+	);
+	render(
+		<AppProviders>
+			<RouterProvider router={router} />
+		</AppProviders>,
+	);
+	const createTemplateButton = await screen.findByRole("button", {
+		name: "Create Template",
+	});
+	await user.click(createTemplateButton);
+	const fromScratchMenuItem = await screen.findByText("From scratch");
+	await user.click(fromScratchMenuItem);
+	await screen.findByTestId("new-template-page");
+	expect(router.state.location.pathname).toBe("/templates/new");
+	expect(router.state.location.search).toBe("?exampleId=scratch");
+});

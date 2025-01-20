@@ -4,47 +4,49 @@ import (
 	"fmt"
 
 	"github.com/fatih/color"
-	"github.com/spf13/cobra"
+
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/serpent"
 )
 
-func templateList() *cobra.Command {
-	var (
-		columns []string
+func (r *RootCmd) templateList() *serpent.Command {
+	formatter := cliui.NewOutputFormatter(
+		cliui.TableFormat([]templateTableRow{}, []string{"name", "organization name", "last updated", "used by"}),
+		cliui.JSONFormat(),
 	)
-	cmd := &cobra.Command{
+
+	client := new(codersdk.Client)
+	cmd := &serpent.Command{
 		Use:     "list",
 		Short:   "List all the templates available for the organization",
 		Aliases: []string{"ls"},
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := CreateClient(cmd)
-			if err != nil {
-				return err
-			}
-			organization, err := currentOrganization(cmd, client)
-			if err != nil {
-				return err
-			}
-			templates, err := client.TemplatesByOrganization(cmd.Context(), organization.ID)
+		Middleware: serpent.Chain(
+			r.InitClient(client),
+		),
+		Handler: func(inv *serpent.Invocation) error {
+			templates, err := client.Templates(inv.Context(), codersdk.TemplateFilter{})
 			if err != nil {
 				return err
 			}
 
 			if len(templates) == 0 {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s No templates found in %s! Create one:\n\n", caret, color.HiWhiteString(organization.Name))
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), color.HiMagentaString("  $ coder templates create <directory>\n"))
+				_, _ = fmt.Fprintf(inv.Stderr, "%s No templates found! Create one:\n\n", Caret)
+				_, _ = fmt.Fprintln(inv.Stderr, color.HiMagentaString("  $ coder templates push <directory>\n"))
 				return nil
 			}
 
-			out, err := displayTemplates(columns, templates...)
+			rows := templatesToRows(templates...)
+			out, err := formatter.Format(inv.Context(), rows)
 			if err != nil {
 				return err
 			}
 
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), out)
+			_, err = fmt.Fprintln(inv.Stdout, out)
 			return err
 		},
 	}
-	cmd.Flags().StringArrayVarP(&columns, "column", "c", []string{"name", "last_updated", "used_by"},
-		"Specify a column to filter in the table.")
+
+	formatter.AttachOptions(&cmd.Options)
 	return cmd
 }

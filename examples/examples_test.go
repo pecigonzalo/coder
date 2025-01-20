@@ -10,13 +10,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/examples"
+	"github.com/coder/coder/v2/examples"
 )
 
 func TestTemplate(t *testing.T) {
 	t.Parallel()
 	list, err := examples.List()
-	require.NoError(t, err)
+	require.NoError(t, err, "error listing examples, run \"make gen\" to ensure examples are up to date")
 	require.NotEmpty(t, list)
 	for _, eg := range list {
 		eg := eg
@@ -27,6 +27,7 @@ func TestTemplate(t *testing.T) {
 			assert.NotEmpty(t, eg.Name, "example name should not be empty")
 			assert.NotEmpty(t, eg.Description, "example description should not be empty")
 			assert.NotEmpty(t, eg.Markdown, "example markdown should not be empty")
+			assert.NotNil(t, eg.Tags, "example tags should not be nil, should be empty array if no tags")
 			_, err := examples.Archive(eg.ID)
 			assert.NoError(t, err, "error archiving example")
 		})
@@ -35,7 +36,7 @@ func TestTemplate(t *testing.T) {
 
 func TestSubdirs(t *testing.T) {
 	t.Parallel()
-	tarData, err := examples.Archive("docker-image-builds")
+	tarData, err := examples.Archive("docker")
 	require.NoError(t, err)
 
 	tarReader := tar.NewReader(bytes.NewReader(tarData))
@@ -50,6 +51,5 @@ func TestSubdirs(t *testing.T) {
 		entryPaths[header.Typeflag] = append(entryPaths[header.Typeflag], header.Name)
 	}
 
-	require.Subset(t, entryPaths[tar.TypeDir], []string{"./", "images/"})
-	require.Subset(t, entryPaths[tar.TypeReg], []string{"README.md", "main.tf", "images/base.Dockerfile"})
+	require.Subset(t, entryPaths[tar.TypeReg], []string{"README.md", "main.tf"})
 }

@@ -1,123 +1,194 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
-	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 
-	"github.com/spf13/cobra"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/provisionersdk"
+	"github.com/coder/serpent"
 )
 
-func templatePull() *cobra.Command {
-	cmd := &cobra.Command{
+func (r *RootCmd) templatePull() *serpent.Command {
+	var (
+		tarMode     bool
+		zipMode     bool
+		versionName string
+		orgContext  = NewOrganizationContext()
+	)
+
+	client := new(codersdk.Client)
+	cmd := &serpent.Command{
 		Use:   "pull <name> [destination]",
-		Short: "Download the latest version of a template to a path.",
-		Args:  cobra.RangeArgs(1, 2),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Short: "Download the active, latest, or specified version of a template to a path.",
+		Middleware: serpent.Chain(
+			serpent.RequireRangeArgs(1, 2),
+			r.InitClient(client),
+		),
+		Handler: func(inv *serpent.Invocation) error {
 			var (
-				ctx          = cmd.Context()
-				templateName = args[0]
+				ctx          = inv.Context()
+				templateName = inv.Args[0]
 				dest         string
 			)
 
-			if len(args) > 1 {
-				dest = args[1]
+			if len(inv.Args) > 1 {
+				dest = inv.Args[1]
 			}
 
-			client, err := CreateClient(cmd)
-			if err != nil {
-				return xerrors.Errorf("create client: %w", err)
+			if tarMode && zipMode {
+				return xerrors.Errorf("either tar or zip can be selected")
 			}
 
-			// TODO(JonA): Do we need to add a flag for organization?
-			organization, err := currentOrganization(cmd, client)
+			organization, err := orgContext.Selected(inv, client)
 			if err != nil {
-				return xerrors.Errorf("current organization: %w", err)
+				return xerrors.Errorf("get current organization: %w", err)
 			}
 
 			template, err := client.TemplateByName(ctx, organization.ID, templateName)
 			if err != nil {
-				return xerrors.Errorf("template by name: %w", err)
+				return xerrors.Errorf("get template by name: %w", err)
 			}
 
-			// Pull the versions for the template. We'll find the latest
-			// one and download the source.
-			versions, err := client.TemplateVersionsByTemplate(ctx, codersdk.TemplateVersionsByTemplateRequest{
-				TemplateID: template.ID,
-			})
-			if err != nil {
-				return xerrors.Errorf("template versions by template: %w", err)
+			var latestVersion codersdk.TemplateVersion
+			{
+				// Determine the latest template version and compare with the
+				// active version. If they aren't the same, warn the user.
+				versions, err := client.TemplateVersionsByTemplate(ctx, codersdk.TemplateVersionsByTemplateRequest{
+					TemplateID: template.ID,
+				})
+				if err != nil {
+					return xerrors.Errorf("template versions by template: %w", err)
+				}
+
+				if len(versions) == 0 {
+					return xerrors.Errorf("no template versions for template %q", templateName)
+				}
+
+				// Sort the slice from newest to oldest template.
+				sort.SliceStable(versions, func(i, j int) bool {
+					return versions[i].CreatedAt.After(versions[j].CreatedAt)
+				})
+
+				latestVersion = versions[0]
 			}
 
-			if len(versions) == 0 {
-				return xerrors.Errorf("no template versions for template %q", templateName)
+			var templateVersion codersdk.TemplateVersion
+			switch versionName {
+			case "", "active":
+				activeVersion, err := client.TemplateVersion(ctx, template.ActiveVersionID)
+				if err != nil {
+					return xerrors.Errorf("get active template version: %w", err)
+				}
+				if versionName == "" && activeVersion.ID != latestVersion.ID {
+					cliui.Warn(inv.Stderr,
+						"A newer template version than the active version exists. Pulling the active version instead.",
+						"Use "+cliui.Code("--version latest")+" to pull the latest version.",
+					)
+				}
+				templateVersion = activeVersion
+			case "latest":
+				templateVersion = latestVersion
+			default:
+				version, err := client.TemplateVersionByName(ctx, template.ID, versionName)
+				if err != nil {
+					return xerrors.Errorf("get template version: %w", err)
+				}
+				templateVersion = version
 			}
 
-			// Sort the slice from newest to oldest template.
-			sort.SliceStable(versions, func(i, j int) bool {
-				return versions[i].CreatedAt.After(versions[j].CreatedAt)
-			})
+			cliui.Info(inv.Stderr, "Pulling template version "+cliui.Bold(templateVersion.Name)+"...")
 
-			latest := versions[0]
+			var fileFormat string // empty = default, so .tar
+			if zipMode {
+				fileFormat = codersdk.FormatZip
+			}
 
 			// Download the tar archive.
-			raw, ctype, err := client.Download(ctx, latest.Job.StorageSource)
+			raw, ctype, err := client.DownloadWithFormat(ctx, templateVersion.Job.FileID, fileFormat)
 			if err != nil {
 				return xerrors.Errorf("download template: %w", err)
 			}
 
-			if ctype != codersdk.ContentTypeTar {
+			if fileFormat == "" && ctype != codersdk.ContentTypeTar {
 				return xerrors.Errorf("unexpected Content-Type %q, expecting %q", ctype, codersdk.ContentTypeTar)
 			}
+			if fileFormat == codersdk.FormatZip && ctype != codersdk.ContentTypeZip {
+				return xerrors.Errorf("unexpected Content-Type %q, expecting %q", ctype, codersdk.ContentTypeZip)
+			}
 
-			// If the destination is empty then we write to stdout
-			// and bail early.
+			if tarMode || zipMode {
+				_, err = inv.Stdout.Write(raw)
+				return err
+			}
+
 			if dest == "" {
-				_, err = cmd.OutOrStdout().Write(raw)
-				if err != nil {
-					return xerrors.Errorf("write stdout: %w", err)
-				}
-				return nil
+				dest = templateName
 			}
 
-			// Stat the destination to ensure nothing exists already.
-			fi, err := os.Stat(dest)
-			if err != nil && !xerrors.Is(err, fs.ErrNotExist) {
-				return xerrors.Errorf("stat destination: %w", err)
+			clean, err := filepath.Abs(filepath.Clean(dest))
+			if err != nil {
+				return xerrors.Errorf("cleaning destination path %s failed: %w", dest, err)
 			}
 
-			if fi != nil && fi.IsDir() {
-				// If the destination is a directory we just bail.
-				return xerrors.Errorf("%q already exists.", dest)
+			dest = clean
+
+			err = os.MkdirAll(dest, 0o750)
+			if err != nil {
+				return xerrors.Errorf("mkdirall %q: %w", dest, err)
 			}
 
-			// If a file exists at the destination prompt the user
-			// to ensure we don't overwrite something valuable.
-			if fi != nil {
-				_, err = cliui.Prompt(cmd, cliui.PromptOptions{
-					Text:      fmt.Sprintf("%q already exists, do you want to overwrite it?", dest),
+			ents, err := os.ReadDir(dest)
+			if err != nil {
+				return xerrors.Errorf("read dir %q: %w", dest, err)
+			}
+
+			if len(ents) > 0 {
+				_, err = cliui.Prompt(inv, cliui.PromptOptions{
+					Text:      fmt.Sprintf("Directory %q is not empty, existing files may be overwritten.\nContinue extracting?", dest),
+					Default:   "No",
+					Secret:    false,
 					IsConfirm: true,
 				})
 				if err != nil {
-					return xerrors.Errorf("parse prompt: %w", err)
+					return err
 				}
 			}
 
-			err = os.WriteFile(dest, raw, 0600)
-			if err != nil {
-				return xerrors.Errorf("write to path: %w", err)
-			}
-
-			return nil
+			_, _ = fmt.Fprintf(inv.Stderr, "Extracting template to %q\n", dest)
+			err = provisionersdk.Untar(dest, bytes.NewReader(raw))
+			return err
 		},
 	}
 
-	cliui.AllowSkipPrompt(cmd)
+	cmd.Options = serpent.OptionSet{
+		{
+			Description: "Output the template as a tar archive to stdout.",
+			Flag:        "tar",
+
+			Value: serpent.BoolOf(&tarMode),
+		},
+		{
+			Description: "Output the template as a zip archive to stdout.",
+			Flag:        "zip",
+
+			Value: serpent.BoolOf(&zipMode),
+		},
+		{
+			Description: "The name of the template version to pull. Use 'active' to pull the active version, 'latest' to pull the latest version, or the name of the template version to pull.",
+			Flag:        "version",
+
+			Value: serpent.StringOf(&versionName),
+		},
+		cliui.SkipPromptOption(),
+	}
+	orgContext.AttachOptions(cmd)
 
 	return cmd
 }

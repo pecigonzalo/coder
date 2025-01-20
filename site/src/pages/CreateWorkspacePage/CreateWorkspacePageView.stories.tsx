@@ -1,132 +1,216 @@
-import { ComponentMeta, Story } from "@storybook/react"
-import { ParameterSchema } from "../../api/typesGenerated"
-import { makeMockApiError, MockTemplate } from "../../testHelpers/entities"
+import { action } from "@storybook/addon-actions";
+import type { Meta, StoryObj } from "@storybook/react";
+import { chromatic } from "testHelpers/chromatic";
 import {
-  CreateWorkspaceErrors,
-  CreateWorkspacePageView,
-  CreateWorkspacePageViewProps,
-} from "./CreateWorkspacePageView"
+	MockTemplate,
+	MockTemplateVersionParameter1,
+	MockTemplateVersionParameter2,
+	MockTemplateVersionParameter3,
+	MockUser,
+	mockApiError,
+} from "testHelpers/entities";
+import { CreateWorkspacePageView } from "./CreateWorkspacePageView";
 
-const createParameterSchema = (
-  partial: Partial<ParameterSchema>,
-): ParameterSchema => {
-  return {
-    id: "000000",
-    job_id: "000000",
-    allow_override_destination: false,
-    allow_override_source: true,
-    created_at: "",
-    default_destination_scheme: "none",
-    default_refresh: "",
-    default_source_scheme: "data",
-    default_source_value: "default-value",
-    name: "parameter name",
-    description: "Some description!",
-    redisplay_value: false,
-    validation_condition: "",
-    validation_contains: [],
-    validation_error: "",
-    validation_type_system: "",
-    validation_value_type: "",
-    ...partial,
-  }
-}
+const meta: Meta<typeof CreateWorkspacePageView> = {
+	title: "pages/CreateWorkspacePage",
+	parameters: { chromatic },
+	component: CreateWorkspacePageView,
+	args: {
+		defaultName: "",
+		defaultOwner: MockUser,
+		autofillParameters: [],
+		template: MockTemplate,
+		parameters: [],
+		externalAuth: [],
+		hasAllRequiredExternalAuth: true,
+		mode: "form",
+		permissions: {
+			createWorkspaceForUser: true,
+		},
+		onCancel: action("onCancel"),
+	},
+};
 
-export default {
-  title: "pages/CreateWorkspacePageView",
-  component: CreateWorkspacePageView,
-} as ComponentMeta<typeof CreateWorkspacePageView>
+export default meta;
+type Story = StoryObj<typeof CreateWorkspacePageView>;
 
-const Template: Story<CreateWorkspacePageViewProps> = (args) => (
-  <CreateWorkspacePageView {...args} />
-)
+export const NoParameters: Story = {};
 
-export const NoParameters = Template.bind({})
-NoParameters.args = {
-  templates: [MockTemplate],
-  selectedTemplate: MockTemplate,
-  templateSchema: [],
-  createWorkspaceErrors: {},
-}
+export const CreateWorkspaceError: Story = {
+	args: {
+		error: mockApiError({
+			message:
+				'Workspace "test" already exists in the "docker-amd64" template.',
+			validations: [
+				{
+					field: "name",
+					detail: "This value is already in use and should be unique.",
+				},
+			],
+		}),
+	},
+};
 
-export const Parameters = Template.bind({})
-Parameters.args = {
-  templates: [MockTemplate],
-  selectedTemplate: MockTemplate,
-  templateSchema: [
-    createParameterSchema({
-      name: "region",
-      default_source_value: "🏈 US Central",
-      description: "Where would you like your workspace to live?",
-      validation_contains: [
-        "🏈 US Central",
-        "⚽ Brazil East",
-        "💶 EU West",
-        "🦘 Australia South",
-      ],
-    }),
-    createParameterSchema({
-      name: "instance_size",
-      default_source_value: "Big",
-      description: "How large should you instance be?",
-      validation_contains: ["Small", "Medium", "Big"],
-    }),
-    createParameterSchema({
-      name: "instance_size",
-      default_source_value: "Big",
-      description: "How large should your instance be?",
-      validation_contains: ["Small", "Medium", "Big"],
-    }),
-    createParameterSchema({
-      name: "disable_docker",
-      description: "Disable Docker?",
-      validation_value_type: "bool",
-      default_source_value: "false",
-    }),
-  ],
-  createWorkspaceErrors: {},
-}
+export const SpecificVersion: Story = {
+	args: {
+		versionId: "specific-version",
+	},
+};
 
-export const GetTemplatesError = Template.bind({})
-GetTemplatesError.args = {
-  ...Parameters.args,
-  createWorkspaceErrors: {
-    [CreateWorkspaceErrors.GET_TEMPLATES_ERROR]: makeMockApiError({
-      message: "Failed to fetch templates.",
-      detail: "You do not have permission to access this resource.",
-    }),
-  },
-  hasTemplateErrors: true,
-}
+export const Duplicate: Story = {
+	args: {
+		mode: "duplicate",
+	},
+};
 
-export const GetTemplateSchemaError = Template.bind({})
-GetTemplateSchemaError.args = {
-  ...Parameters.args,
-  createWorkspaceErrors: {
-    [CreateWorkspaceErrors.GET_TEMPLATE_SCHEMA_ERROR]: makeMockApiError({
-      message: 'Failed to fetch template schema for "docker-amd64".',
-      detail: "You do not have permission to access this resource.",
-    }),
-  },
-  hasTemplateErrors: true,
-}
+export const Parameters: Story = {
+	args: {
+		parameters: [
+			MockTemplateVersionParameter1,
+			MockTemplateVersionParameter2,
+			MockTemplateVersionParameter3,
+			{
+				name: "Region",
+				required: false,
+				description: "",
+				description_plaintext: "",
+				type: "string",
+				mutable: false,
+				default_value: "",
+				icon: "/emojis/1f30e.png",
+				options: [
+					{
+						name: "Pittsburgh",
+						description: "",
+						value: "us-pittsburgh",
+						icon: "/emojis/1f1fa-1f1f8.png",
+					},
+					{
+						name: "Helsinki",
+						description: "",
+						value: "eu-helsinki",
+						icon: "/emojis/1f1eb-1f1ee.png",
+					},
+					{
+						name: "Sydney",
+						description: "",
+						value: "ap-sydney",
+						icon: "/emojis/1f1e6-1f1fa.png",
+					},
+				],
+				ephemeral: false,
+			},
+		],
+		autofillParameters: [
+			{
+				name: "first_parameter",
+				value: "Cool suggestion",
+				source: "user_history",
+			},
+			{
+				name: "third_parameter",
+				value: "aaaa",
+				source: "url",
+			},
+		],
+	},
+};
 
-export const CreateWorkspaceError = Template.bind({})
-CreateWorkspaceError.args = {
-  ...Parameters.args,
-  createWorkspaceErrors: {
-    [CreateWorkspaceErrors.CREATE_WORKSPACE_ERROR]: makeMockApiError({
-      message:
-        'Workspace "test" already exists in the "docker-amd64" template.',
-      validations: [
-        {
-          field: "name",
-          detail: "This value is already in use and should be unique.",
-        },
-      ],
-    }),
-  },
-  initialTouched: {
-    name: true,
-  },
-}
+export const ExternalAuth: Story = {
+	args: {
+		externalAuth: [
+			{
+				id: "github",
+				type: "github",
+				authenticated: false,
+				authenticate_url: "",
+				display_icon: "/icon/github.svg",
+				display_name: "GitHub",
+			},
+			{
+				id: "gitlab",
+				type: "gitlab",
+				authenticated: true,
+				authenticate_url: "",
+				display_icon: "/icon/gitlab.svg",
+				display_name: "GitLab",
+				optional: true,
+			},
+		],
+		hasAllRequiredExternalAuth: false,
+	},
+};
+
+export const ExternalAuthError: Story = {
+	args: {
+		error: true,
+		externalAuth: [
+			{
+				id: "github",
+				type: "github",
+				authenticated: false,
+				authenticate_url: "",
+				display_icon: "/icon/github.svg",
+				display_name: "GitHub",
+			},
+			{
+				id: "gitlab",
+				type: "gitlab",
+				authenticated: false,
+				authenticate_url: "",
+				display_icon: "/icon/gitlab.svg",
+				display_name: "GitLab",
+				optional: true,
+			},
+		],
+		hasAllRequiredExternalAuth: false,
+	},
+};
+
+export const ExternalAuthAllRequiredConnected: Story = {
+	args: {
+		externalAuth: [
+			{
+				id: "github",
+				type: "github",
+				authenticated: true,
+				authenticate_url: "",
+				display_icon: "/icon/github.svg",
+				display_name: "GitHub",
+			},
+			{
+				id: "gitlab",
+				type: "gitlab",
+				authenticated: false,
+				authenticate_url: "",
+				display_icon: "/icon/gitlab.svg",
+				display_name: "GitLab",
+				optional: true,
+			},
+		],
+	},
+};
+
+export const ExternalAuthAllConnected: Story = {
+	args: {
+		externalAuth: [
+			{
+				id: "github",
+				type: "github",
+				authenticated: true,
+				authenticate_url: "",
+				display_icon: "/icon/github.svg",
+				display_name: "GitHub",
+			},
+			{
+				id: "gitlab",
+				type: "gitlab",
+				authenticated: true,
+				authenticate_url: "",
+				display_icon: "/icon/gitlab.svg",
+				display_name: "GitLab",
+				optional: true,
+			},
+		],
+	},
+};

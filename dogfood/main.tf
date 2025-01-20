@@ -1,125 +1,75 @@
 terraform {
   required_providers {
-    coder = {
-      source  = "coder/coder"
-      version = "0.5.0"
-    }
-    docker = {
-      source  = "kreuzwerker/docker"
-      version = "~> 2.20.0"
+    coderd = {
+      source = "coder/coderd"
     }
   }
-}
-
-# Admin parameters
-
-provider "docker" {
-  host = "unix:///var/run/dogfood-docker.sock"
-}
-
-provider "coder" {
-}
-
-data "coder_workspace" "me" {
-}
-
-resource "coder_agent" "dev" {
-  arch           = "amd64"
-  os             = "linux"
-  startup_script = <<EOF
-    #!/bin/sh
-    set -x
-    # install and start code-server
-    curl -fsSL https://code-server.dev/install.sh | sh
-    code-server --auth none --port 13337 &
-    sudo service docker start
-    if [ -f ~/personalize ]; then ~/personalize 2>&1 | tee  ~/.personalize.log; fi
-    EOF
-}
-
-resource "coder_app" "code-server" {
-  agent_id = coder_agent.dev.id
-  name     = "code-server"
-  url      = "http://localhost:13337/"
-  icon     = "/icon/code.svg"
-
-  healthcheck {
-    url       = "http://localhost:13337/healthz"
-    interval  = 3
-    threshold = 10
+  backend "gcs" {
+    bucket = "coder-dogfood-tf-state"
   }
 }
 
-
-resource "docker_volume" "home_volume" {
-  name = "coder-${data.coder_workspace.me.owner}-${data.coder_workspace.me.name}-home"
+data "coderd_organization" "default" {
+  is_default = true
 }
 
-resource "coder_metadata" "home_info" {
-  resource_id = docker_volume.home_volume.id
-  item {
-    key       = "🤫🤫🤫<br/><br/>"
-    value     = "❤️❤️❤️"
-    sensitive = true
-  }
+data "coderd_user" "machine" {
+  username = "machine"
 }
 
-
-data "docker_registry_image" "dogfood" {
-  name = "codercom/oss-dogfood:main"
+variable "CODER_TEMPLATE_NAME" {
+  type = string
 }
 
-
-locals {
-  container_name = "coder-${data.coder_workspace.me.owner}-${lower(data.coder_workspace.me.name)}"
+variable "CODER_TEMPLATE_VERSION" {
+  type = string
 }
 
-resource "docker_image" "dogfood" {
-  name          = data.docker_registry_image.dogfood.name
-  pull_triggers = [data.docker_registry_image.dogfood.sha256_digest]
-  keep_locally  = true
+variable "CODER_TEMPLATE_DIR" {
+  type = string
 }
 
-resource "docker_container" "workspace" {
-  count = data.coder_workspace.me.start_count
-  image = docker_image.dogfood.name
-  # Uses lower() to avoid Docker restriction on container names.
-  name = local.container_name
-  # Hostname makes the shell more user friendly: coder@my-workspace:~$
-  hostname = lower(data.coder_workspace.me.name)
-  dns      = ["1.1.1.1"]
-  # Use the docker gateway if the access URL is 127.0.0.1
-  command = [
-    "sh", "-c",
-    <<EOT
-    trap '[ $? -ne 0 ] && echo === Agent script exited with non-zero code. Sleeping infinitely to preserve logs... && sleep infinity' EXIT
-    ${replace(coder_agent.dev.init_script, "localhost", "host.docker.internal")}
-    EOT
+variable "CODER_TEMPLATE_MESSAGE" {
+  type = string
+}
+
+resource "coderd_template" "dogfood" {
+  name            = var.CODER_TEMPLATE_NAME
+  display_name    = "Write Coder on Coder"
+  description     = "The template to use when developing Coder on Coder!"
+  icon            = "/emojis/1f3c5.png"
+  organization_id = "703f72a1-76f6-4f89-9de6-8a3989693fe5"
+  versions = [
+    {
+      name      = var.CODER_TEMPLATE_VERSION
+      message   = var.CODER_TEMPLATE_MESSAGE
+      directory = var.CODER_TEMPLATE_DIR
+      active    = true
+    }
   ]
-  # CPU limits are unnecessary since Docker will load balance automatically
-  memory  = 32768
-  runtime = "sysbox-runc"
-  env     = ["CODER_AGENT_TOKEN=${coder_agent.dev.token}"]
-  host {
-    host = "host.docker.internal"
-    ip   = "host-gateway"
+  acl = {
+    groups = [{
+      id   = data.coderd_organization.default.id
+      role = "use"
+    }]
+    users = [{
+      id   = data.coderd_user.machine.id
+      role = "admin"
+    }]
   }
-  volumes {
-    container_path = "/home/coder/"
-    volume_name    = docker_volume.home_volume.name
-    read_only      = false
+  activity_bump_ms                  = 10800000
+  allow_user_auto_start             = true
+  allow_user_auto_stop              = true
+  allow_user_cancel_workspace_jobs  = false
+  auto_start_permitted_days_of_week = ["friday", "monday", "saturday", "sunday", "thursday", "tuesday", "wednesday"]
+  auto_stop_requirement = {
+    days_of_week = ["sunday"]
+    weeks        = 1
   }
-}
-
-resource "coder_metadata" "container_info" {
-  count       = data.coder_workspace.me.start_count
-  resource_id = docker_container.workspace[0].id
-  item {
-    key   = "memory"
-    value = docker_container.workspace[0].memory
-  }
-  item {
-    key   = "runtime"
-    value = docker_container.workspace[0].runtime
-  }
+  default_ttl_ms                 = 28800000
+  deprecation_message            = null
+  failure_ttl_ms                 = 604800000
+  require_active_version         = true
+  time_til_dormant_autodelete_ms = 7776000000
+  time_til_dormant_ms            = 8640000000
 }

@@ -1,47 +1,48 @@
 terraform {
   required_providers {
     coder = {
-      source  = "coder/coder"
-      version = "0.5.0"
+      source = "coder/coder"
     }
     google = {
-      source  = "hashicorp/google"
-      version = "~> 4.34.0"
+      source = "hashicorp/google"
     }
   }
 }
+
+provider "coder" {}
 
 variable "project_id" {
   description = "Which Google Compute Project should your workspace live in?"
 }
 
-variable "zone" {
-  description = "What region should your workspace live in?"
-  default     = "us-central1-a"
-  validation {
-    condition     = contains(["northamerica-northeast1-a", "us-central1-a", "us-west2-c", "europe-west4-b", "southamerica-east1-a"], var.zone)
-    error_message = "Invalid zone!"
-  }
+# See https://registry.coder.com/modules/gcp-region
+module "gcp_region" {
+  source = "registry.coder.com/modules/gcp-region/coder"
+
+  # This ensures that the latest version of the module gets downloaded, you can also pin the module version to prevent breaking changes in production.
+  version = ">= 1.0.0"
+
+  regions = ["us", "europe"]
+  default = "us-central1-a"
 }
 
 provider "google" {
-  zone    = var.zone
+  zone    = module.gcp_region.value
   project = var.project_id
 }
 
-data "coder_workspace" "me" {
-}
+data "coder_workspace" "me" {}
+data "coder_workspace_owner" "me" {}
 
-data "google_compute_default_service_account" "default" {
-}
+data "google_compute_default_service_account" "default" {}
 
 resource "google_compute_disk" "root" {
-  name  = "coder-${lower(data.coder_workspace.me.owner)}-${lower(data.coder_workspace.me.name)}-root"
+  name  = "coder-${data.coder_workspace.me.id}-root"
   type  = "pd-ssd"
-  zone  = var.zone
+  zone  = module.gcp_region.value
   image = "projects/windows-cloud/global/images/windows-server-2022-dc-core-v20220215"
   lifecycle {
-    ignore_changes = [image]
+    ignore_changes = [name, image]
   }
 }
 
@@ -52,9 +53,9 @@ resource "coder_agent" "main" {
 }
 
 resource "google_compute_instance" "dev" {
-  zone         = var.zone
+  zone         = module.gcp_region.value
   count        = data.coder_workspace.me.start_count
-  name         = "coder-${lower(data.coder_workspace.me.owner)}-${lower(data.coder_workspace.me.name)}"
+  name         = "coder-${lower(data.coder_workspace_owner.me.name)}-${lower(data.coder_workspace.me.name)}"
   machine_type = "e2-medium"
   network_interface {
     network = "default"

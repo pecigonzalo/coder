@@ -5,14 +5,16 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/coderd/gitsshkey"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/provisioner/echo"
-	"github.com/coder/coder/provisionersdk/proto"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/audit"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/gitsshkey"
+	"github.com/coder/coder/v2/codersdk/agentsdk"
+	"github.com/coder/coder/v2/provisioner/echo"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestGitSSHKey(t *testing.T) {
@@ -73,8 +75,10 @@ func TestGitSSHKey(t *testing.T) {
 	})
 	t.Run("Regenerate", func(t *testing.T) {
 		t.Parallel()
+		auditor := audit.NewMock()
 		client := coderdtest.New(t, &coderdtest.Options{
 			SSHKeygenAlgorithm: gitsshkey.AlgorithmEd25519,
+			Auditor:            auditor,
 		})
 		res := coderdtest.CreateFirstUser(t, client)
 
@@ -88,7 +92,9 @@ func TestGitSSHKey(t *testing.T) {
 		require.NoError(t, err)
 		require.GreaterOrEqual(t, key2.UpdatedAt, key1.UpdatedAt)
 		require.NotEmpty(t, key2.PublicKey)
-		require.NotEqual(t, key2.PublicKey, key1.PublicKey)
+
+		require.Len(t, auditor.AuditLogs(), 2)
+		assert.Equal(t, database.AuditActionWrite, auditor.AuditLogs()[1].Action)
 	})
 }
 
@@ -101,37 +107,22 @@ func TestAgentGitSSHKey(t *testing.T) {
 	user := coderdtest.CreateFirstUser(t, client)
 	authToken := uuid.NewString()
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
-		Parse:           echo.ParseComplete,
-		ProvisionDryRun: echo.ProvisionComplete,
-		Provision: []*proto.Provision_Response{{
-			Type: &proto.Provision_Response_Complete{
-				Complete: &proto.Provision_Complete{
-					Resources: []*proto.Resource{{
-						Name: "example",
-						Type: "aws_instance",
-						Agents: []*proto.Agent{{
-							Id: uuid.NewString(),
-							Auth: &proto.Agent_Token{
-								Token: authToken,
-							},
-						}},
-					}},
-				},
-			},
-		}},
+		Parse:          echo.ParseComplete,
+		ProvisionPlan:  echo.PlanComplete,
+		ProvisionApply: echo.ProvisionApplyWithAgent(authToken),
 	})
 	project := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
-	coderdtest.AwaitTemplateVersionJob(t, client, version.ID)
-	workspace := coderdtest.CreateWorkspace(t, client, user.OrganizationID, project.ID)
-	coderdtest.AwaitWorkspaceBuildJob(t, client, workspace.LatestBuild.ID)
+	coderdtest.AwaitTemplateVersionJobCompleted(t, client, version.ID)
+	workspace := coderdtest.CreateWorkspace(t, client, project.ID)
+	coderdtest.AwaitWorkspaceBuildJobCompleted(t, client, workspace.LatestBuild.ID)
 
-	agentClient := codersdk.New(client.URL)
-	agentClient.SessionToken = authToken
+	agentClient := agentsdk.New(client.URL)
+	agentClient.SetSessionToken(authToken)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 	defer cancel()
 
-	agentKey, err := agentClient.AgentGitSSHKey(ctx)
+	agentKey, err := agentClient.GitSSHKey(ctx)
 	require.NoError(t, err)
 	require.NotEmpty(t, agentKey.PrivateKey)
 }

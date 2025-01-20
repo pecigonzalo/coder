@@ -1,22 +1,22 @@
-import { Story } from "@storybook/react"
-import { Expander, ExpanderProps } from "./Expander"
+import type { Meta, StoryObj } from "@storybook/react";
+import { Expander } from "./Expander";
 
-export default {
-  title: "components/Expander",
-  component: Expander,
-  argTypes: {
-    setExpanded: { action: "setExpanded" },
-  },
-}
+const meta: Meta<typeof Expander> = {
+	title: "components/Expander",
+	component: Expander,
+};
 
-const Template: Story<ExpanderProps> = (args) => <Expander {...args} />
+export default meta;
+type Story = StoryObj<typeof Expander>;
 
-export const Expanded = Template.bind({})
-Expanded.args = {
-  expanded: true,
-}
+export const Expanded: Story = {
+	args: {
+		expanded: true,
+	},
+};
 
-export const Collapsed = Template.bind({})
-Collapsed.args = {
-  expanded: false,
-}
+export const Collapsed: Story = {
+	args: {
+		expanded: false,
+	},
+};

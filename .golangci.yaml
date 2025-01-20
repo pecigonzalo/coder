@@ -2,8 +2,19 @@
 # Over time we should try tightening some of these.
 
 linters-settings:
+  dupl:
+    # goal: 100
+    threshold: 412
+
+  exhaustruct:
+    include:
+      # Gradually extend to cover more of the codebase.
+      - 'httpmw\.\w+'
+      # We want to enforce all values are specified when inserting or updating
+      # a database row. Ref: #9936
+      - 'github.com/coder/coder/v2/coderd/database\.[^G][^e][^t]\w+Params'
   gocognit:
-    min-complexity: 46 # Min code complexity (def 30).
+    min-complexity: 300
 
   goconst:
     min-len: 4 # Min length of string consts (def 3).
@@ -54,7 +65,6 @@ linters-settings:
       # - importShadow
       - indexAlloc
       - initClause
-      - ioutilDeprecated
       - mapKey
       - methodExprCall
       # - nestingReduce
@@ -103,7 +113,7 @@ linters-settings:
     settings:
       ruleguard:
         failOn: all
-        rules: '${configDir}/scripts/rules.go'
+        rules: "${configDir}/scripts/rules.go"
 
   staticcheck:
     # https://staticcheck.io/docs/options#checks
@@ -115,17 +125,17 @@ linters-settings:
   goimports:
     local-prefixes: coder.com,cdr.dev,go.coder.com,github.com/cdr,github.com/coder
 
-  gocyclo:
-    min-complexity: 50
-
   importas:
     no-unaliased: true
 
   misspell:
     locale: US
+    ignore-words:
+      - trialer
 
   nestif:
-    min-complexity: 4 # Min complexity of if statements (def 5, goal 4)
+    # goal: 10
+    min-complexity: 20
 
   revive:
     # see https://github.com/mgechev/revive#available-rules for details.
@@ -165,8 +175,6 @@ linters-settings:
       - name: modifies-value-receiver
       - name: package-comments
       - name: range
-      - name: range-val-address
-      - name: range-val-in-closure
       - name: receiver-naming
       - name: redefines-builtin-id
       - name: string-of-int
@@ -185,6 +193,15 @@ linters-settings:
       - name: var-naming
       - name: waitgroup-by-value
 
+  # irrelevant as of Go v1.22: https://go.dev/blog/loopvar-preview
+  govet:
+    disable:
+      - loopclosure
+  gosec:
+    excludes:
+      # Implicit memory aliasing of items from a range statement (irrelevant as of Go v1.22)
+      - G601
+
 issues:
   # Rules listed here: https://github.com/securego/gosec#available-rules
   exclude-rules:
@@ -192,18 +209,23 @@ issues:
       linters:
         # We use assertions rather than explicitly checking errors in tests
         - errcheck
+        - forcetypeassert
+        - exhaustruct # This is unhelpful in tests.
+    - path: scripts/*
+      linters:
+        - exhaustruct
 
   fix: true
   max-issues-per-linter: 0
   max-same-issues: 0
 
 run:
-  concurrency: 4
   skip-dirs:
     - node_modules
+    - .git
   skip-files:
     - scripts/rules.go
-  timeout: 5m
+  timeout: 10m
 
 # Over time, add more and more linters from
 # https://golangci-lint.run/usage/linters/ as the code improves.
@@ -213,15 +235,19 @@ linters:
     - asciicheck
     - bidichk
     - bodyclose
-    - deadcode
     - dogsled
     - errcheck
     - errname
     - errorlint
-    - exportloopref
+    - exhaustruct
     - forcetypeassert
     - gocritic
-    - gocyclo
+    # gocyclo is may be useful in the future when we start caring
+    # about testing complexity, but for the time being we should
+    # create a good culture around cognitive complexity.
+    # - gocyclo
+    - gocognit
+    - nestif
     - goimports
     - gomodguard
     - gosec
@@ -235,10 +261,15 @@ linters:
     - noctx
     - paralleltest
     - revive
-    - rowserrcheck
-    - sqlclosecheck
+
+    # These don't work until the following issue is solved.
+    # https://github.com/golangci/golangci-lint/issues/2649
+    # - rowserrcheck
+    # - sqlclosecheck
+    # - structcheck
+    # - wastedassign
+
     - staticcheck
-    - structcheck
     - tenv
     # In Go, it's possible for a package to test it's internal functionality
     # without testing any exported functions. This is enabled to promote
@@ -252,5 +283,4 @@ linters:
     - typecheck
     - unconvert
     - unused
-    - varcheck
-    - wastedassign
+    - dupl

@@ -2,58 +2,37 @@ package httpmw_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/databasefake"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/cryptorand"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbgen"
+	"github.com/coder/coder/v2/coderd/database/dbmem"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestOrganizationParam(t *testing.T) {
 	t.Parallel()
 
 	setupAuthentication := func(db database.Store) (*http.Request, database.User) {
-		var (
-			id, secret = randomAPIKeyParts()
-			r          = httptest.NewRequest("GET", "/", nil)
-			hashed     = sha256.Sum256([]byte(secret))
-		)
-		r.Header.Set(codersdk.SessionCustomHeader, fmt.Sprintf("%s-%s", id, secret))
+		r := httptest.NewRequest("GET", "/", nil)
 
-		userID := uuid.New()
-		username, err := cryptorand.String(8)
-		require.NoError(t, err)
-
-		user, err := db.InsertUser(r.Context(), database.InsertUserParams{
-			ID:             userID,
-			Email:          "testaccount@coder.com",
-			HashedPassword: hashed[:],
-			Username:       username,
-			CreatedAt:      database.Now(),
-			UpdatedAt:      database.Now(),
+		user := dbgen.User(t, db, database.User{
+			ID: uuid.New(),
 		})
-		require.NoError(t, err)
-		_, err = db.InsertAPIKey(r.Context(), database.InsertAPIKeyParams{
-			ID:           id,
-			UserID:       user.ID,
-			HashedSecret: hashed[:],
-			LastUsed:     database.Now(),
-			ExpiresAt:    database.Now().Add(time.Minute),
-			LoginType:    database.LoginTypePassword,
-			Scope:        database.APIKeyScopeAll,
+		_, token := dbgen.APIKey(t, db, database.APIKey{
+			UserID: user.ID,
 		})
-		require.NoError(t, err)
+		r.Header.Set(codersdk.SessionTokenHeader, token)
 		r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, chi.NewRouteContext()))
 		return r, user
 	}
@@ -61,13 +40,13 @@ func TestOrganizationParam(t *testing.T) {
 	t.Run("None", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db   = databasefake.New()
+			db   = dbmem.New()
 			rw   = httptest.NewRecorder()
 			r, _ = setupAuthentication(db)
 			rtr  = chi.NewRouter()
 		)
 		rtr.Use(
-			httpmw.ExtractAPIKey(httpmw.ExtractAPIKeyConfig{
+			httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
 				DB:              db,
 				RedirectToLogin: false,
 			}),
@@ -83,14 +62,14 @@ func TestOrganizationParam(t *testing.T) {
 	t.Run("NotFound", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db   = databasefake.New()
+			db   = dbmem.New()
 			rw   = httptest.NewRecorder()
 			r, _ = setupAuthentication(db)
 			rtr  = chi.NewRouter()
 		)
 		chi.RouteContext(r.Context()).URLParams.Add("organization", uuid.NewString())
 		rtr.Use(
-			httpmw.ExtractAPIKey(httpmw.ExtractAPIKeyConfig{
+			httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
 				DB:              db,
 				RedirectToLogin: false,
 			}),
@@ -106,14 +85,14 @@ func TestOrganizationParam(t *testing.T) {
 	t.Run("InvalidUUID", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db   = databasefake.New()
+			db   = dbmem.New()
 			rw   = httptest.NewRecorder()
 			r, _ = setupAuthentication(db)
 			rtr  = chi.NewRouter()
 		)
 		chi.RouteContext(r.Context()).URLParams.Add("organization", "not-a-uuid")
 		rtr.Use(
-			httpmw.ExtractAPIKey(httpmw.ExtractAPIKeyConfig{
+			httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
 				DB:              db,
 				RedirectToLogin: false,
 			}),
@@ -123,13 +102,13 @@ func TestOrganizationParam(t *testing.T) {
 		rtr.ServeHTTP(rw, r)
 		res := rw.Result()
 		defer res.Body.Close()
-		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+		require.Equal(t, http.StatusNotFound, res.StatusCode)
 	})
 
 	t.Run("NotInOrganization", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db   = databasefake.New()
+			db   = dbmem.New()
 			rw   = httptest.NewRecorder()
 			r, u = setupAuthentication(db)
 			rtr  = chi.NewRouter()
@@ -137,14 +116,14 @@ func TestOrganizationParam(t *testing.T) {
 		organization, err := db.InsertOrganization(r.Context(), database.InsertOrganizationParams{
 			ID:        uuid.New(),
 			Name:      "test",
-			CreatedAt: database.Now(),
-			UpdatedAt: database.Now(),
+			CreatedAt: dbtime.Now(),
+			UpdatedAt: dbtime.Now(),
 		})
 		require.NoError(t, err)
 		chi.RouteContext(r.Context()).URLParams.Add("organization", organization.ID.String())
 		chi.RouteContext(r.Context()).URLParams.Add("user", u.ID.String())
 		rtr.Use(
-			httpmw.ExtractAPIKey(httpmw.ExtractAPIKeyConfig{
+			httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
 				DB:              db,
 				RedirectToLogin: false,
 			}),
@@ -162,29 +141,26 @@ func TestOrganizationParam(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
 		t.Parallel()
 		var (
-			db      = databasefake.New()
+			ctx     = testutil.Context(t, testutil.WaitShort)
+			db      = dbmem.New()
 			rw      = httptest.NewRecorder()
 			r, user = setupAuthentication(db)
 			rtr     = chi.NewRouter()
 		)
-		organization, err := db.InsertOrganization(r.Context(), database.InsertOrganizationParams{
-			ID:        uuid.New(),
-			Name:      "test",
-			CreatedAt: database.Now(),
-			UpdatedAt: database.Now(),
-		})
-		require.NoError(t, err)
-		_, err = db.InsertOrganizationMember(r.Context(), database.InsertOrganizationMemberParams{
+		organization := dbgen.Organization(t, db, database.Organization{})
+		_ = dbgen.OrganizationMember(t, db, database.OrganizationMember{
 			OrganizationID: organization.ID,
 			UserID:         user.ID,
-			CreatedAt:      database.Now(),
-			UpdatedAt:      database.Now(),
+			Roles:          []string{codersdk.RoleOrganizationMember},
+		})
+		_, err := db.UpdateUserRoles(ctx, database.UpdateUserRolesParams{
+			ID:           user.ID,
+			GrantedRoles: []string{codersdk.RoleTemplateAdmin},
 		})
 		require.NoError(t, err)
-		chi.RouteContext(r.Context()).URLParams.Add("organization", organization.ID.String())
-		chi.RouteContext(r.Context()).URLParams.Add("user", user.ID.String())
+
 		rtr.Use(
-			httpmw.ExtractAPIKey(httpmw.ExtractAPIKeyConfig{
+			httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
 				DB:              db,
 				RedirectToLogin: false,
 			}),
@@ -193,13 +169,62 @@ func TestOrganizationParam(t *testing.T) {
 			httpmw.ExtractOrganizationMemberParam(db),
 		)
 		rtr.Get("/", func(rw http.ResponseWriter, r *http.Request) {
-			_ = httpmw.OrganizationParam(r)
-			_ = httpmw.OrganizationMemberParam(r)
+			org := httpmw.OrganizationParam(r)
+			assert.NotZero(t, org)
+			assert.NotZero(t, org.CreatedAt)
+			// assert.NotZero(t, org.Description) // not supported
+			assert.NotZero(t, org.ID)
+			assert.NotEmpty(t, org.Name)
+			orgMem := httpmw.OrganizationMemberParam(r)
 			rw.WriteHeader(http.StatusOK)
+			assert.NotZero(t, orgMem)
+			assert.NotZero(t, orgMem.CreatedAt)
+			assert.NotZero(t, orgMem.UpdatedAt)
+			assert.Equal(t, org.ID, orgMem.OrganizationID)
+			assert.Equal(t, user.ID, orgMem.UserID)
+			assert.Equal(t, user.Username, orgMem.Username)
+			assert.Equal(t, user.AvatarURL, orgMem.AvatarURL)
+			assert.NotEmpty(t, orgMem.Roles)
+			assert.NotZero(t, orgMem.OrganizationMember)
+			assert.NotEmpty(t, orgMem.OrganizationMember.CreatedAt)
+			assert.NotEmpty(t, orgMem.OrganizationMember.UpdatedAt)
+			assert.NotEmpty(t, orgMem.OrganizationMember.UserID)
+			assert.NotEmpty(t, orgMem.OrganizationMember.Roles)
 		})
+
+		// Try by ID
+		chi.RouteContext(r.Context()).URLParams.Add("organization", organization.ID.String())
+		chi.RouteContext(r.Context()).URLParams.Add("user", user.ID.String())
 		rtr.ServeHTTP(rw, r)
 		res := rw.Result()
 		defer res.Body.Close()
-		require.Equal(t, http.StatusOK, res.StatusCode)
+		require.Equal(t, http.StatusOK, res.StatusCode, "by id")
+
+		// Try by name
+		chi.RouteContext(r.Context()).URLParams.Add("organization", organization.Name)
+		chi.RouteContext(r.Context()).URLParams.Add("user", user.ID.String())
+		rtr.ServeHTTP(rw, r)
+		res = rw.Result()
+		defer res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "by name")
+
+		// Try by 'default'
+		chi.RouteContext(r.Context()).URLParams.Add("organization", codersdk.DefaultOrganization)
+		chi.RouteContext(r.Context()).URLParams.Add("user", user.ID.String())
+		rtr.ServeHTTP(rw, r)
+		res = rw.Result()
+		defer res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "by default keyword")
+
+		// Try by legacy
+		// TODO: This can be removed when legacy nil uuids are no longer supported.
+		//		 This is a temporary measure to ensure as legacy provisioners use
+		//		 nil uuids as the org id and expect the default org.
+		chi.RouteContext(r.Context()).URLParams.Add("organization", uuid.Nil.String())
+		chi.RouteContext(r.Context()).URLParams.Add("user", user.ID.String())
+		rtr.ServeHTTP(rw, r)
+		res = rw.Result()
+		defer res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "by nil uuid (legacy)")
 	})
 }

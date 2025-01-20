@@ -8,24 +8,26 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/pty"
-	"github.com/coder/coder/pty/ptytest"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/pty"
+	"github.com/coder/coder/v2/pty/ptytest"
+	"github.com/coder/coder/v2/testutil"
+	"github.com/coder/serpent"
 )
 
 func TestPrompt(t *testing.T) {
 	t.Parallel()
 	t.Run("Success", func(t *testing.T) {
 		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitShort)
 		ptty := ptytest.New(t)
 		msgChan := make(chan string)
 		go func() {
-			resp, err := newPrompt(ptty, cliui.PromptOptions{
+			resp, err := newPrompt(ctx, ptty, cliui.PromptOptions{
 				Text: "Example",
 			}, nil)
 			assert.NoError(t, err)
@@ -33,15 +35,17 @@ func TestPrompt(t *testing.T) {
 		}()
 		ptty.ExpectMatch("Example")
 		ptty.WriteLine("hello")
-		require.Equal(t, "hello", <-msgChan)
+		resp := testutil.RequireRecvCtx(ctx, t, msgChan)
+		require.Equal(t, "hello", resp)
 	})
 
 	t.Run("Confirm", func(t *testing.T) {
 		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitShort)
 		ptty := ptytest.New(t)
 		doneChan := make(chan string)
 		go func() {
-			resp, err := newPrompt(ptty, cliui.PromptOptions{
+			resp, err := newPrompt(ctx, ptty, cliui.PromptOptions{
 				Text:      "Example",
 				IsConfirm: true,
 			}, nil)
@@ -50,18 +54,20 @@ func TestPrompt(t *testing.T) {
 		}()
 		ptty.ExpectMatch("Example")
 		ptty.WriteLine("yes")
-		require.Equal(t, "yes", <-doneChan)
+		resp := testutil.RequireRecvCtx(ctx, t, doneChan)
+		require.Equal(t, "yes", resp)
 	})
 
 	t.Run("Skip", func(t *testing.T) {
 		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitShort)
 		ptty := ptytest.New(t)
 		var buf bytes.Buffer
 
 		// Copy all data written out to a buffer. When we close the ptty, we can
 		// no longer read from the ptty.Output(), but we can read what was
 		// written to the buffer.
-		dataRead, doneReading := context.WithTimeout(context.Background(), testutil.WaitShort)
+		dataRead, doneReading := context.WithCancel(ctx)
 		go func() {
 			// This will throw an error sometimes. The underlying ptty
 			// has its own cleanup routines in t.Cleanup. Instead of
@@ -74,18 +80,19 @@ func TestPrompt(t *testing.T) {
 
 		doneChan := make(chan string)
 		go func() {
-			resp, err := newPrompt(ptty, cliui.PromptOptions{
+			resp, err := newPrompt(ctx, ptty, cliui.PromptOptions{
 				Text:      "ShouldNotSeeThis",
 				IsConfirm: true,
-			}, func(cmd *cobra.Command) {
-				cliui.AllowSkipPrompt(cmd)
-				cmd.SetArgs([]string{"-y"})
+			}, func(inv *serpent.Invocation) {
+				inv.Command.Options = append(inv.Command.Options, cliui.SkipPromptOption())
+				inv.Args = []string{"-y"}
 			})
 			assert.NoError(t, err)
 			doneChan <- resp
 		}()
 
-		require.Equal(t, "yes", <-doneChan)
+		resp := testutil.RequireRecvCtx(ctx, t, doneChan)
+		require.Equal(t, "yes", resp)
 		// Close the reader to end the io.Copy
 		require.NoError(t, ptty.Close(), "close eof reader")
 		// Wait for the IO copy to finish
@@ -96,10 +103,11 @@ func TestPrompt(t *testing.T) {
 	})
 	t.Run("JSON", func(t *testing.T) {
 		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitShort)
 		ptty := ptytest.New(t)
 		doneChan := make(chan string)
 		go func() {
-			resp, err := newPrompt(ptty, cliui.PromptOptions{
+			resp, err := newPrompt(ctx, ptty, cliui.PromptOptions{
 				Text: "Example",
 			}, nil)
 			assert.NoError(t, err)
@@ -107,15 +115,17 @@ func TestPrompt(t *testing.T) {
 		}()
 		ptty.ExpectMatch("Example")
 		ptty.WriteLine("{}")
-		require.Equal(t, "{}", <-doneChan)
+		resp := testutil.RequireRecvCtx(ctx, t, doneChan)
+		require.Equal(t, "{}", resp)
 	})
 
 	t.Run("BadJSON", func(t *testing.T) {
 		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitShort)
 		ptty := ptytest.New(t)
 		doneChan := make(chan string)
 		go func() {
-			resp, err := newPrompt(ptty, cliui.PromptOptions{
+			resp, err := newPrompt(ctx, ptty, cliui.PromptOptions{
 				Text: "Example",
 			}, nil)
 			assert.NoError(t, err)
@@ -123,15 +133,17 @@ func TestPrompt(t *testing.T) {
 		}()
 		ptty.ExpectMatch("Example")
 		ptty.WriteLine("{a")
-		require.Equal(t, "{a", <-doneChan)
+		resp := testutil.RequireRecvCtx(ctx, t, doneChan)
+		require.Equal(t, "{a", resp)
 	})
 
 	t.Run("MultilineJSON", func(t *testing.T) {
 		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitShort)
 		ptty := ptytest.New(t)
 		doneChan := make(chan string)
 		go func() {
-			resp, err := newPrompt(ptty, cliui.PromptOptions{
+			resp, err := newPrompt(ctx, ptty, cliui.PromptOptions{
 				Text: "Example",
 			}, nil)
 			assert.NoError(t, err)
@@ -141,27 +153,55 @@ func TestPrompt(t *testing.T) {
 		ptty.WriteLine(`{
 "test": "wow"
 }`)
-		require.Equal(t, `{"test":"wow"}`, <-doneChan)
+		resp := testutil.RequireRecvCtx(ctx, t, doneChan)
+		require.Equal(t, `{"test":"wow"}`, resp)
+	})
+
+	t.Run("InvalidValid", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitShort)
+		ptty := ptytest.New(t)
+		doneChan := make(chan string)
+		go func() {
+			resp, err := newPrompt(ctx, ptty, cliui.PromptOptions{
+				Text: "Example",
+				Validate: func(s string) error {
+					t.Logf("validate: %q", s)
+					if s != "valid" {
+						return xerrors.New("invalid")
+					}
+					return nil
+				},
+			}, nil)
+			assert.NoError(t, err)
+			doneChan <- resp
+		}()
+		ptty.ExpectMatch("Example")
+		ptty.WriteLine("foo\nbar\nbaz\n\n\nvalid\n")
+		resp := testutil.RequireRecvCtx(ctx, t, doneChan)
+		require.Equal(t, "valid", resp)
 	})
 }
 
-func newPrompt(ptty *ptytest.PTY, opts cliui.PromptOptions, cmdOpt func(cmd *cobra.Command)) (string, error) {
+func newPrompt(ctx context.Context, ptty *ptytest.PTY, opts cliui.PromptOptions, invOpt func(inv *serpent.Invocation)) (string, error) {
 	value := ""
-	cmd := &cobra.Command{
-		RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &serpent.Command{
+		Handler: func(inv *serpent.Invocation) error {
 			var err error
-			value, err = cliui.Prompt(cmd, opts)
+			value, err = cliui.Prompt(inv, opts)
 			return err
 		},
 	}
+
+	inv := cmd.Invoke()
 	// Optionally modify the cmd
-	if cmdOpt != nil {
-		cmdOpt(cmd)
+	if invOpt != nil {
+		invOpt(inv)
 	}
-	cmd.SetOut(ptty.Output())
-	cmd.SetErr(ptty.Output())
-	cmd.SetIn(ptty.Input())
-	return value, cmd.ExecuteContext(context.Background())
+	inv.Stdout = ptty.Output()
+	inv.Stderr = ptty.Output()
+	inv.Stdin = ptty.Input()
+	return value, inv.WithContext(ctx).Run()
 }
 
 func TestPasswordTerminalState(t *testing.T) {
@@ -208,13 +248,17 @@ func TestPasswordTerminalState(t *testing.T) {
 
 // nolint:unused
 func passwordHelper() {
-	cmd := &cobra.Command{
-		Run: func(cmd *cobra.Command, args []string) {
-			cliui.Prompt(cmd, cliui.PromptOptions{
+	cmd := &serpent.Command{
+		Handler: func(inv *serpent.Invocation) error {
+			cliui.Prompt(inv, cliui.PromptOptions{
 				Text:   "Password:",
 				Secret: true,
 			})
+			return nil
 		},
 	}
-	cmd.ExecuteContext(context.Background())
+	err := cmd.Invoke().WithOS().Run()
+	if err != nil {
+		panic(err)
+	}
 }

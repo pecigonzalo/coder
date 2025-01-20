@@ -1,76 +1,27 @@
 package coderd_test
 
 import (
-	"context"
-	"crypto/rand"
-	"runtime"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/coderd/coderdtest"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/provisionersdk"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/testutil"
 )
 
-func TestProvisionerDaemons(t *testing.T) {
+func TestGetProvisionerDaemons(t *testing.T) {
 	t.Parallel()
-	t.Run("PayloadTooBig", func(t *testing.T) {
+
+	t.Run("OK", func(t *testing.T) {
 		t.Parallel()
-		if runtime.GOOS == "windows" {
-			// Takes too long to allocate memory on Windows!
-			t.Skip()
-		}
 		client := coderdtest.New(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
-		user := coderdtest.CreateFirstUser(t, client)
-		data := make([]byte, provisionersdk.MaxMessageSize)
-		rand.Read(data)
+		owner := coderdtest.CreateFirstUser(t, client)
+		memberClient, _ := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID)
 
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
-		defer cancel()
+		ctx := testutil.Context(t, testutil.WaitMedium)
 
-		resp, err := client.Upload(ctx, codersdk.ContentTypeTar, data)
+		daemons, err := memberClient.ProvisionerDaemons(ctx)
 		require.NoError(t, err)
-		t.Log(resp.Hash)
-
-		version, err := client.CreateTemplateVersion(ctx, user.OrganizationID, codersdk.CreateTemplateVersionRequest{
-			StorageMethod: codersdk.ProvisionerStorageMethodFile,
-			StorageSource: resp.Hash,
-			Provisioner:   codersdk.ProvisionerTypeEcho,
-		})
-		require.NoError(t, err)
-		require.Eventually(t, func() bool {
-			var err error
-			version, err = client.TemplateVersion(ctx, version.ID)
-			return assert.NoError(t, err) && version.Job.Error != ""
-		}, testutil.WaitShort, testutil.IntervalFast)
-	})
-}
-
-func TestProvisionerDaemonsByOrganization(t *testing.T) {
-	t.Parallel()
-	t.Run("NoAuth", func(t *testing.T) {
-		t.Parallel()
-		client := coderdtest.New(t, nil)
-
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
-		defer cancel()
-
-		_, err := client.ProvisionerDaemons(ctx)
-		require.Error(t, err)
-	})
-
-	t.Run("Get", func(t *testing.T) {
-		t.Parallel()
-		client := coderdtest.New(t, nil)
-		_ = coderdtest.CreateFirstUser(t, client)
-
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
-		defer cancel()
-
-		_, err := client.ProvisionerDaemons(ctx)
-		require.NoError(t, err)
+		require.Len(t, daemons, 1)
 	})
 }

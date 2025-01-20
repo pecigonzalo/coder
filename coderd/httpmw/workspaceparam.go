@@ -2,8 +2,6 @@ package httpmw
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,9 +9,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 type workspaceParamContextKey struct{}
@@ -32,12 +30,12 @@ func ExtractWorkspaceParam(db database.Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-			workspaceID, parsed := parseUUID(rw, r, "workspace")
+			workspaceID, parsed := ParseUUIDParam(rw, r, "workspace")
 			if !parsed {
 				return
 			}
 			workspace, err := db.GetWorkspaceByID(ctx, workspaceID)
-			if errors.Is(err, sql.ErrNoRows) {
+			if httpapi.Is404Error(err) {
 				httpapi.ResourceNotFound(rw)
 				return
 			}
@@ -74,7 +72,7 @@ func ExtractWorkspaceAndAgentParam(db database.Store) func(http.Handler) http.Ha
 				Name:    workspaceParts[0],
 			})
 			if err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
+				if httpapi.Is404Error(err) {
 					httpapi.ResourceNotFound(rw)
 					return
 				}

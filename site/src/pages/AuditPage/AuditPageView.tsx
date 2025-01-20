@@ -1,123 +1,148 @@
-import Table from "@material-ui/core/Table"
-import TableBody from "@material-ui/core/TableBody"
-import TableCell from "@material-ui/core/TableCell"
-import TableContainer from "@material-ui/core/TableContainer"
-import TableHead from "@material-ui/core/TableHead"
-import TableRow from "@material-ui/core/TableRow"
-import { AuditLog } from "api/typesGenerated"
-import { AuditLogRow } from "components/AuditLogRow/AuditLogRow"
-import { EmptyState } from "components/EmptyState/EmptyState"
-import { Margins } from "components/Margins/Margins"
+import Table from "@mui/material/Table";
+import TableBody from "@mui/material/TableBody";
+import TableCell from "@mui/material/TableCell";
+import TableContainer from "@mui/material/TableContainer";
+import TableRow from "@mui/material/TableRow";
+import type { AuditLog } from "api/typesGenerated";
+import { ChooseOne, Cond } from "components/Conditionals/ChooseOne";
+import { EmptyState } from "components/EmptyState/EmptyState";
+import { Margins } from "components/Margins/Margins";
 import {
-  PageHeader,
-  PageHeaderSubtitle,
-  PageHeaderTitle,
-} from "components/PageHeader/PageHeader"
-import { PaginationWidget } from "components/PaginationWidget/PaginationWidget"
-import { SearchBarWithFilter } from "components/SearchBarWithFilter/SearchBarWithFilter"
-import { Stack } from "components/Stack/Stack"
-import { TableLoader } from "components/TableLoader/TableLoader"
-import { AuditHelpTooltip } from "components/Tooltips"
-import { FC } from "react"
+	PageHeader,
+	PageHeaderSubtitle,
+	PageHeaderTitle,
+} from "components/PageHeader/PageHeader";
+import {
+	PaginationContainer,
+	type PaginationResult,
+} from "components/PaginationWidget/PaginationContainer";
+import { Paywall } from "components/Paywall/Paywall";
+import { Stack } from "components/Stack/Stack";
+import { TableLoader } from "components/TableLoader/TableLoader";
+import { Timeline } from "components/Timeline/Timeline";
+import type { ComponentProps, FC } from "react";
+import { docs } from "utils/docs";
+import { AuditFilter } from "./AuditFilter";
+import { AuditHelpTooltip } from "./AuditHelpTooltip";
+import { AuditLogRow } from "./AuditLogRow/AuditLogRow";
 
 export const Language = {
-  title: "Audit",
-  subtitle: "View events in your audit log.",
-}
-
-const presetFilters = [
-  {
-    query: "resource_type:workspace action:create",
-    name: "Created workspaces",
-  },
-  { query: "resource_type:template action:create", name: "Added templates" },
-  { query: "resource_type:user action:create", name: "Added users" },
-  { query: "resource_type:template action:delete", name: "Deleted templates" },
-  { query: "resource_type:user action:delete", name: "Deleted users" },
-]
+	title: "Audit",
+	subtitle: "View events in your audit log.",
+};
 
 export interface AuditPageViewProps {
-  auditLogs?: AuditLog[]
-  count?: number
-  page: number
-  limit: number
-  filter: string
-  onFilter: (filter: string) => void
-  onNext: () => void
-  onPrevious: () => void
-  onGoToPage: (page: number) => void
+	auditLogs?: readonly AuditLog[];
+	isNonInitialPage: boolean;
+	isAuditLogVisible: boolean;
+	error?: unknown;
+	filterProps: ComponentProps<typeof AuditFilter>;
+	auditsQuery: PaginationResult;
+	showOrgDetails: boolean;
 }
 
 export const AuditPageView: FC<AuditPageViewProps> = ({
-  auditLogs,
-  count,
-  page,
-  limit,
-  filter,
-  onFilter,
-  onNext,
-  onPrevious,
-  onGoToPage,
+	auditLogs,
+	isNonInitialPage,
+	isAuditLogVisible,
+	error,
+	filterProps,
+	auditsQuery: paginationResult,
+	showOrgDetails,
 }) => {
-  const isLoading = auditLogs === undefined || count === undefined
-  const isEmpty = !isLoading && auditLogs.length === 0
-  const hasResults = !isLoading && auditLogs.length > 0
+	const isLoading =
+		(auditLogs === undefined || paginationResult.totalRecords === undefined) &&
+		!error;
 
-  return (
-    <Margins>
-      <PageHeader>
-        <PageHeaderTitle>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <span>{Language.title}</span>
-            <AuditHelpTooltip />
-          </Stack>
-        </PageHeaderTitle>
-        <PageHeaderSubtitle>{Language.subtitle}</PageHeaderSubtitle>
-      </PageHeader>
+	const isEmpty = !isLoading && auditLogs?.length === 0;
 
-      <SearchBarWithFilter
-        docs="https://coder.com/docs/coder-oss/latest/admin/audit-logs#filtering-logs"
-        filter={filter}
-        onFilter={onFilter}
-        presetFilters={presetFilters}
-      />
+	return (
+		<Margins>
+			<PageHeader>
+				<PageHeaderTitle>
+					<Stack direction="row" spacing={1} alignItems="center">
+						<span>{Language.title}</span>
+						<AuditHelpTooltip />
+					</Stack>
+				</PageHeaderTitle>
+				<PageHeaderSubtitle>{Language.subtitle}</PageHeaderSubtitle>
+			</PageHeader>
 
-      <TableContainer>
-        <Table>
-          <TableHead>
-            <TableRow>
-              <TableCell style={{ paddingLeft: 32 }}>Logs</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {isLoading && <TableLoader />}
-            {hasResults &&
-              auditLogs.map((auditLog) => (
-                <AuditLogRow auditLog={auditLog} key={auditLog.id} />
-              ))}
-            {isEmpty && (
-              <TableRow>
-                <TableCell colSpan={999}>
-                  <EmptyState message="No audit logs available" />
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </TableContainer>
+			<ChooseOne>
+				<Cond condition={isAuditLogVisible}>
+					<AuditFilter {...filterProps} />
 
-      {count && count > limit ? (
-        <PaginationWidget
-          prevLabel=""
-          nextLabel=""
-          onPrevClick={onPrevious}
-          onNextClick={onNext}
-          onPageClick={onGoToPage}
-          numRecords={count}
-          activePage={page}
-          numRecordsPerPage={limit}
-        />
-      ) : null}
-    </Margins>
-  )
-}
+					<PaginationContainer
+						query={paginationResult}
+						paginationUnitLabel="logs"
+					>
+						<TableContainer>
+							<Table>
+								<TableBody>
+									<ChooseOne>
+										{/* Error condition should just show an empty table. */}
+										<Cond condition={Boolean(error)}>
+											<TableRow>
+												<TableCell colSpan={999}>
+													<EmptyState message="An error occurred while loading audit logs" />
+												</TableCell>
+											</TableRow>
+										</Cond>
+
+										<Cond condition={isLoading}>
+											<TableLoader />
+										</Cond>
+
+										<Cond condition={isEmpty}>
+											<ChooseOne>
+												<Cond condition={isNonInitialPage}>
+													<TableRow>
+														<TableCell colSpan={999}>
+															<EmptyState message="No audit logs available on this page" />
+														</TableCell>
+													</TableRow>
+												</Cond>
+
+												<Cond>
+													<TableRow>
+														<TableCell colSpan={999}>
+															<EmptyState message="No audit logs available" />
+														</TableCell>
+													</TableRow>
+												</Cond>
+											</ChooseOne>
+										</Cond>
+
+										<Cond>
+											{auditLogs && (
+												<Timeline
+													items={auditLogs}
+													getDate={(log) => new Date(log.time)}
+													row={(log) => (
+														<AuditLogRow
+															key={log.id}
+															auditLog={log}
+															showOrgDetails={showOrgDetails}
+														/>
+													)}
+												/>
+											)}
+										</Cond>
+									</ChooseOne>
+								</TableBody>
+							</Table>
+						</TableContainer>
+					</PaginationContainer>
+				</Cond>
+
+				<Cond>
+					<Paywall
+						message="Audit logs"
+						description="Audit logs allow you to monitor user operations on your deployment. You need an Premium license to use this feature."
+						documentationLink={docs("/admin/security/audit-logs")}
+					/>
+				</Cond>
+			</ChooseOne>
+		</Margins>
+	);
+};

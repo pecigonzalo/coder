@@ -2,163 +2,33 @@ package coderd
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"cdr.dev/slog"
-	"cdr.dev/slog/sloggers/slogtest"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/databasefake"
-	"github.com/coder/coder/coderd/rbac"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbmock"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/database/pubsub"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/provisionersdk"
+	"github.com/coder/coder/v2/testutil"
+	"github.com/coder/websocket"
 )
-
-func TestProvisionerJobLogs_Unit(t *testing.T) {
-	t.Parallel()
-
-	t.Run("QueryPubSubDupes", func(t *testing.T) {
-		t.Parallel()
-		logger := slogtest.Make(t, nil).Leveled(slog.LevelDebug)
-		// mDB := mocks.NewStore(t)
-		fDB := databasefake.New()
-		fPubsub := &fakePubSub{t: t, cond: sync.NewCond(&sync.Mutex{})}
-		opts := Options{
-			Logger:   logger,
-			Database: fDB,
-			Pubsub:   fPubsub,
-		}
-		api := New(&opts)
-		defer api.Close()
-
-		server := httptest.NewServer(api.RootHandler)
-		defer server.Close()
-		userID := uuid.New()
-		keyID, keySecret, err := generateAPIKeyIDSecret()
-		require.NoError(t, err)
-		hashed := sha256.Sum256([]byte(keySecret))
-
-		u, err := url.Parse(server.URL)
-		require.NoError(t, err)
-		client := codersdk.Client{
-			HTTPClient:   server.Client(),
-			SessionToken: keyID + "-" + keySecret,
-			URL:          u,
-		}
-
-		buildID := uuid.New()
-		workspaceID := uuid.New()
-		jobID := uuid.New()
-
-		expectedLogs := []database.ProvisionerJobLog{
-			{ID: uuid.New(), JobID: jobID, Stage: "Stage0"},
-			{ID: uuid.New(), JobID: jobID, Stage: "Stage1"},
-			{ID: uuid.New(), JobID: jobID, Stage: "Stage2"},
-			{ID: uuid.New(), JobID: jobID, Stage: "Stage3"},
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
-		defer cancel()
-
-		// wow there are a lot of DB rows we touch...
-		_, err = fDB.InsertAPIKey(ctx, database.InsertAPIKeyParams{
-			ID:           keyID,
-			HashedSecret: hashed[:],
-			UserID:       userID,
-			ExpiresAt:    time.Now().Add(5 * time.Hour),
-			LoginType:    database.LoginTypePassword,
-			Scope:        database.APIKeyScopeAll,
-		})
-		require.NoError(t, err)
-		_, err = fDB.InsertUser(ctx, database.InsertUserParams{
-			ID:        userID,
-			RBACRoles: []string{rbac.RoleOwner()},
-		})
-		require.NoError(t, err)
-		_, err = fDB.InsertWorkspaceBuild(ctx, database.InsertWorkspaceBuildParams{
-			ID:          buildID,
-			WorkspaceID: workspaceID,
-			JobID:       jobID,
-		})
-		require.NoError(t, err)
-		_, err = fDB.InsertWorkspace(ctx, database.InsertWorkspaceParams{
-			ID: workspaceID,
-		})
-		require.NoError(t, err)
-		_, err = fDB.InsertProvisionerJob(ctx, database.InsertProvisionerJobParams{
-			ID: jobID,
-		})
-		require.NoError(t, err)
-		for _, l := range expectedLogs[:2] {
-			_, err := fDB.InsertProvisionerJobLogs(ctx, database.InsertProvisionerJobLogsParams{
-				ID:    []uuid.UUID{l.ID},
-				JobID: jobID,
-				Stage: []string{l.Stage},
-			})
-			require.NoError(t, err)
-		}
-
-		logs, closer, err := client.WorkspaceBuildLogsAfter(ctx, buildID, time.Now())
-		require.NoError(t, err)
-		defer closer.Close()
-
-		// when the endpoint calls subscribe, we get the listener here.
-		fPubsub.cond.L.Lock()
-		for fPubsub.listener == nil {
-			fPubsub.cond.Wait()
-		}
-
-		// endpoint should now be listening
-		assert.False(t, fPubsub.canceled)
-		assert.False(t, fPubsub.closed)
-
-		// send all the logs in two batches, duplicating what we already returned on the DB query.
-		msg := provisionerJobLogsMessage{}
-		msg.Logs = expectedLogs[:2]
-		data, err := json.Marshal(msg)
-		require.NoError(t, err)
-		fPubsub.listener(ctx, data)
-		msg.Logs = expectedLogs[2:]
-		data, err = json.Marshal(msg)
-		require.NoError(t, err)
-		fPubsub.listener(ctx, data)
-
-		// send end of logs
-		msg.Logs = nil
-		msg.EndOfLogs = true
-		data, err = json.Marshal(msg)
-		require.NoError(t, err)
-		fPubsub.listener(ctx, data)
-
-		var stages []string
-		for l := range logs {
-			logger.Info(ctx, "got log",
-				slog.F("id", l.ID),
-				slog.F("stage", l.Stage))
-			stages = append(stages, l.Stage)
-		}
-		assert.Equal(t, []string{"Stage0", "Stage1", "Stage2", "Stage3"}, stages)
-		for !fPubsub.canceled {
-			fPubsub.cond.Wait()
-		}
-		assert.False(t, fPubsub.closed)
-	})
-}
 
 func TestConvertProvisionerJob_Unit(t *testing.T) {
 	t.Parallel()
 	validNullTimeMock := sql.NullTime{
-		Time:  database.Now(),
+		Time:  dbtime.Now(),
 		Valid: true,
 	}
 	invalidNullTimeMock := sql.NullTime{}
@@ -172,8 +42,10 @@ func TestConvertProvisionerJob_Unit(t *testing.T) {
 		expected codersdk.ProvisionerJob
 	}{
 		{
-			name:  "empty",
-			input: database.ProvisionerJob{},
+			name: "empty",
+			input: database.ProvisionerJob{
+				JobStatus: database.ProvisionerJobStatusPending,
+			},
 			expected: codersdk.ProvisionerJob{
 				Status: codersdk.ProvisionerJobPending,
 			},
@@ -183,9 +55,11 @@ func TestConvertProvisionerJob_Unit(t *testing.T) {
 			input: database.ProvisionerJob{
 				CanceledAt:  validNullTimeMock,
 				CompletedAt: invalidNullTimeMock,
+				JobStatus:   database.ProvisionerJobStatusCanceling,
 			},
 			expected: codersdk.ProvisionerJob{
-				Status: codersdk.ProvisionerJobCanceling,
+				CanceledAt: &validNullTimeMock.Time,
+				Status:     codersdk.ProvisionerJobCanceling,
 			},
 		},
 		{
@@ -194,8 +68,10 @@ func TestConvertProvisionerJob_Unit(t *testing.T) {
 				CanceledAt:  validNullTimeMock,
 				CompletedAt: validNullTimeMock,
 				Error:       errorMock,
+				JobStatus:   database.ProvisionerJobStatusFailed,
 			},
 			expected: codersdk.ProvisionerJob{
+				CanceledAt:  &validNullTimeMock.Time,
 				CompletedAt: &validNullTimeMock.Time,
 				Status:      codersdk.ProvisionerJobFailed,
 				Error:       errorMock.String,
@@ -206,8 +82,10 @@ func TestConvertProvisionerJob_Unit(t *testing.T) {
 			input: database.ProvisionerJob{
 				CanceledAt:  validNullTimeMock,
 				CompletedAt: validNullTimeMock,
+				JobStatus:   database.ProvisionerJobStatusCanceled,
 			},
 			expected: codersdk.ProvisionerJob{
+				CanceledAt:  &validNullTimeMock.Time,
 				CompletedAt: &validNullTimeMock.Time,
 				Status:      codersdk.ProvisionerJobCanceled,
 			},
@@ -216,6 +94,7 @@ func TestConvertProvisionerJob_Unit(t *testing.T) {
 			name: "job pending",
 			input: database.ProvisionerJob{
 				StartedAt: invalidNullTimeMock,
+				JobStatus: database.ProvisionerJobStatusPending,
 			},
 			expected: codersdk.ProvisionerJob{
 				Status: codersdk.ProvisionerJobPending,
@@ -227,6 +106,7 @@ func TestConvertProvisionerJob_Unit(t *testing.T) {
 				CompletedAt: validNullTimeMock,
 				StartedAt:   validNullTimeMock,
 				Error:       errorMock,
+				JobStatus:   database.ProvisionerJobStatusFailed,
 			},
 			expected: codersdk.ProvisionerJob{
 				CompletedAt: &validNullTimeMock.Time,
@@ -240,6 +120,7 @@ func TestConvertProvisionerJob_Unit(t *testing.T) {
 			input: database.ProvisionerJob{
 				CompletedAt: validNullTimeMock,
 				StartedAt:   validNullTimeMock,
+				JobStatus:   database.ProvisionerJobStatusSucceeded,
 			},
 			expected: codersdk.ProvisionerJob{
 				CompletedAt: &validNullTimeMock.Time,
@@ -252,44 +133,288 @@ func TestConvertProvisionerJob_Unit(t *testing.T) {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			actual := convertProvisionerJob(testCase.input)
+			actual := convertProvisionerJob(database.GetProvisionerJobsByIDsWithQueuePositionRow{
+				ProvisionerJob: testCase.input,
+			})
 			assert.Equal(t, testCase.expected, actual)
 		})
 	}
 }
 
-type fakePubSub struct {
-	t        *testing.T
-	cond     *sync.Cond
-	listener database.Listener
-	canceled bool
-	closed   bool
+func Test_logFollower_completeBeforeFollow(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+	defer cancel()
+	logger := testutil.Logger(t)
+	ctrl := gomock.NewController(t)
+	mDB := dbmock.NewMockStore(ctrl)
+	ps := pubsub.NewInMemory()
+	now := dbtime.Now()
+	job := database.ProvisionerJob{
+		ID:        uuid.New(),
+		CreatedAt: now.Add(-10 * time.Second),
+		UpdatedAt: now.Add(-10 * time.Second),
+		StartedAt: sql.NullTime{
+			Time:  now.Add(-10 * time.Second),
+			Valid: true,
+		},
+		CompletedAt: sql.NullTime{
+			Time:  now.Add(-time.Second),
+			Valid: true,
+		},
+		Error:     sql.NullString{},
+		JobStatus: database.ProvisionerJobStatusSucceeded,
+	}
+
+	// we need an HTTP server to get a websocket
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		uut := newLogFollower(ctx, logger, mDB, ps, rw, r, job, 10)
+		uut.follow()
+	}))
+	defer srv.Close()
+
+	// return some historical logs
+	mDB.EXPECT().GetProvisionerLogsAfterID(gomock.Any(), matchesJobAfter(job.ID, 10)).
+		Times(1).
+		Return(
+			[]database.ProvisionerJobLog{
+				{Stage: "One", Output: "One", ID: 11},
+				{Stage: "One", Output: "Two", ID: 12},
+			},
+			nil,
+		)
+
+	// nolint: bodyclose
+	client, _, err := websocket.Dial(ctx, srv.URL, nil)
+	require.NoError(t, err)
+	mt, msg, err := client.Read(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, websocket.MessageText, mt)
+	assertLog(t, "One", "One", 11, msg)
+
+	mt, msg, err = client.Read(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, websocket.MessageText, mt)
+	assertLog(t, "One", "Two", 12, msg)
+
+	// server should now close
+	_, _, err = client.Read(ctx)
+	var closeErr websocket.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	assert.Equal(t, websocket.StatusNormalClosure, closeErr.Code)
 }
 
-func (f *fakePubSub) Subscribe(_ string, listener database.Listener) (cancel func(), err error) {
-	f.cond.L.Lock()
-	defer f.cond.L.Unlock()
-	f.listener = listener
-	f.cond.Signal()
-	return f.cancel, nil
+func Test_logFollower_completeBeforeSubscribe(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+	defer cancel()
+	logger := testutil.Logger(t)
+	ctrl := gomock.NewController(t)
+	mDB := dbmock.NewMockStore(ctrl)
+	ps := pubsub.NewInMemory()
+	now := dbtime.Now()
+	job := database.ProvisionerJob{
+		ID:        uuid.New(),
+		CreatedAt: now.Add(-10 * time.Second),
+		UpdatedAt: now.Add(-10 * time.Second),
+		StartedAt: sql.NullTime{
+			Time:  now.Add(-10 * time.Second),
+			Valid: true,
+		},
+		CanceledAt:  sql.NullTime{},
+		CompletedAt: sql.NullTime{},
+		Error:       sql.NullString{},
+		JobStatus:   database.ProvisionerJobStatusRunning,
+	}
+
+	// we need an HTTP server to get a websocket
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		uut := newLogFollower(ctx, logger, mDB, ps, rw, r, job, 0)
+		uut.follow()
+	}))
+	defer srv.Close()
+
+	// job was incomplete when we create the logFollower, but is complete as soon
+	// as it queries again.
+	mDB.EXPECT().GetProvisionerJobByID(gomock.Any(), job.ID).Times(1).Return(
+		database.ProvisionerJob{
+			ID:        job.ID,
+			CreatedAt: job.CreatedAt,
+			UpdatedAt: job.UpdatedAt,
+			StartedAt: job.StartedAt,
+			CompletedAt: sql.NullTime{
+				Time:  now.Add(-time.Millisecond),
+				Valid: true,
+			},
+			JobStatus: database.ProvisionerJobStatusSucceeded,
+		},
+		nil,
+	)
+
+	// return some historical logs
+	mDB.EXPECT().GetProvisionerLogsAfterID(gomock.Any(), matchesJobAfter(job.ID, 0)).
+		Times(1).
+		Return(
+			[]database.ProvisionerJobLog{
+				{Stage: "One", Output: "One", ID: 1},
+				{Stage: "One", Output: "Two", ID: 2},
+			},
+			nil,
+		)
+
+	// nolint: bodyclose
+	client, _, err := websocket.Dial(ctx, srv.URL, nil)
+	require.NoError(t, err)
+	mt, msg, err := client.Read(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, websocket.MessageText, mt)
+	assertLog(t, "One", "One", 1, msg)
+
+	mt, msg, err = client.Read(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, websocket.MessageText, mt)
+	assertLog(t, "One", "Two", 2, msg)
+
+	// server should now close
+	_, _, err = client.Read(ctx)
+	var closeErr websocket.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	assert.Equal(t, websocket.StatusNormalClosure, closeErr.Code)
 }
 
-func (f *fakePubSub) Publish(_ string, _ []byte) error {
-	f.t.Fail()
-	return nil
+func Test_logFollower_EndOfLogs(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+	defer cancel()
+	logger := testutil.Logger(t)
+	ctrl := gomock.NewController(t)
+	mDB := dbmock.NewMockStore(ctrl)
+	ps := pubsub.NewInMemory()
+	now := dbtime.Now()
+	job := database.ProvisionerJob{
+		ID:        uuid.New(),
+		CreatedAt: now.Add(-10 * time.Second),
+		UpdatedAt: now.Add(-10 * time.Second),
+		StartedAt: sql.NullTime{
+			Time:  now.Add(-10 * time.Second),
+			Valid: true,
+		},
+		CanceledAt:  sql.NullTime{},
+		CompletedAt: sql.NullTime{},
+		Error:       sql.NullString{},
+		JobStatus:   database.ProvisionerJobStatusRunning,
+	}
+
+	// we need an HTTP server to get a websocket
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		uut := newLogFollower(ctx, logger, mDB, ps, rw, r, job, 0)
+		uut.follow()
+	}))
+	defer srv.Close()
+
+	// job was incomplete when we create the logFollower, and still incomplete when it queries
+	mDB.EXPECT().GetProvisionerJobByID(gomock.Any(), job.ID).Times(1).Return(job, nil)
+
+	// return some historical logs
+	q0 := mDB.EXPECT().GetProvisionerLogsAfterID(gomock.Any(), matchesJobAfter(job.ID, 0)).
+		Times(1).
+		Return(
+			[]database.ProvisionerJobLog{
+				{Stage: "One", Output: "One", ID: 1},
+				{Stage: "One", Output: "Two", ID: 2},
+			},
+			nil,
+		)
+	// return some logs from a kick.
+	mDB.EXPECT().GetProvisionerLogsAfterID(gomock.Any(), matchesJobAfter(job.ID, 2)).
+		After(q0).
+		Times(1).
+		Return(
+			[]database.ProvisionerJobLog{
+				{Stage: "One", Output: "Three", ID: 3},
+				{Stage: "Two", Output: "One", ID: 4},
+			},
+			nil,
+		)
+
+	// nolint: bodyclose
+	client, _, err := websocket.Dial(ctx, srv.URL, nil)
+	require.NoError(t, err)
+	mt, msg, err := client.Read(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, websocket.MessageText, mt)
+	assertLog(t, "One", "One", 1, msg)
+
+	mt, msg, err = client.Read(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, websocket.MessageText, mt)
+	assertLog(t, "One", "Two", 2, msg)
+
+	// send in the kick so follower will query a second time
+	n := provisionersdk.ProvisionerJobLogsNotifyMessage{
+		CreatedAfter: 2,
+	}
+	msg, err = json.Marshal(&n)
+	require.NoError(t, err)
+	err = ps.Publish(provisionersdk.ProvisionerJobLogsNotifyChannel(job.ID), msg)
+	require.NoError(t, err)
+
+	mt, msg, err = client.Read(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, websocket.MessageText, mt)
+	assertLog(t, "One", "Three", 3, msg)
+
+	mt, msg, err = client.Read(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, websocket.MessageText, mt)
+	assertLog(t, "Two", "One", 4, msg)
+
+	// send EndOfLogs
+	n.EndOfLogs = true
+	n.CreatedAfter = 0
+	msg, err = json.Marshal(&n)
+	require.NoError(t, err)
+	err = ps.Publish(provisionersdk.ProvisionerJobLogsNotifyChannel(job.ID), msg)
+	require.NoError(t, err)
+
+	// server should now close
+	_, _, err = client.Read(ctx)
+	var closeErr websocket.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	assert.Equal(t, websocket.StatusNormalClosure, closeErr.Code)
 }
 
-func (f *fakePubSub) Close() error {
-	f.cond.L.Lock()
-	defer f.cond.L.Unlock()
-	f.closed = true
-	f.cond.Signal()
-	return nil
+func assertLog(t *testing.T, stage, output string, id int64, msg []byte) {
+	t.Helper()
+	var log codersdk.ProvisionerJobLog
+	err := json.Unmarshal(msg, &log)
+	require.NoError(t, err)
+	assert.Equal(t, stage, log.Stage)
+	assert.Equal(t, output, log.Output)
+	assert.Equal(t, id, log.ID)
 }
 
-func (f *fakePubSub) cancel() {
-	f.cond.L.Lock()
-	defer f.cond.L.Unlock()
-	f.canceled = true
-	f.cond.Signal()
+type logsAfterMatcher struct {
+	params database.GetProvisionerLogsAfterIDParams
+}
+
+func (m *logsAfterMatcher) Matches(x interface{}) bool {
+	p, ok := x.(database.GetProvisionerLogsAfterIDParams)
+	if !ok {
+		return false
+	}
+	return m.params == p
+}
+
+func (m *logsAfterMatcher) String() string {
+	return fmt.Sprintf("%+v", m.params)
+}
+
+func matchesJobAfter(jobID uuid.UUID, after int64) gomock.Matcher {
+	return &logsAfterMatcher{
+		params: database.GetProvisionerLogsAfterIDParams{
+			JobID:        jobID,
+			CreatedAfter: after,
+		},
+	}
 }

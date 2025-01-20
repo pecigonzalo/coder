@@ -10,24 +10,26 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/cli/clitest"
-	"github.com/coder/coder/cli/config"
-	"github.com/coder/coder/cryptorand"
+	"github.com/coder/coder/v2/cli/clitest"
+	"github.com/coder/coder/v2/cli/config"
+	"github.com/coder/coder/v2/cryptorand"
 )
 
-// nolint:paralleltest
 func TestDotfiles(t *testing.T) {
+	t.Parallel()
 	t.Run("MissingArg", func(t *testing.T) {
-		cmd, _ := clitest.New(t, "dotfiles")
-		err := cmd.Execute()
+		t.Parallel()
+		inv, _ := clitest.New(t, "dotfiles")
+		err := inv.Run()
 		require.Error(t, err)
 	})
 	t.Run("NoInstallScript", func(t *testing.T) {
+		t.Parallel()
 		_, root := clitest.New(t)
 		testRepo := testGitRepo(t, root)
 
 		// nolint:gosec
-		err := os.WriteFile(filepath.Join(testRepo, ".bashrc"), []byte("wow"), 0750)
+		err := os.WriteFile(filepath.Join(testRepo, ".bashrc"), []byte("wow"), 0o750)
 		require.NoError(t, err)
 
 		c := exec.Command("git", "add", ".bashrc")
@@ -40,15 +42,78 @@ func TestDotfiles(t *testing.T) {
 		out, err := c.CombinedOutput()
 		require.NoError(t, err, string(out))
 
-		cmd, _ := clitest.New(t, "dotfiles", "--global-config", string(root), "--symlink-dir", string(root), "-y", testRepo)
-		err = cmd.Execute()
+		inv, _ := clitest.New(t, "dotfiles", "--global-config", string(root), "--symlink-dir", string(root), "-y", testRepo)
+		err = inv.Run()
 		require.NoError(t, err)
 
 		b, err := os.ReadFile(filepath.Join(string(root), ".bashrc"))
 		require.NoError(t, err)
 		require.Equal(t, string(b), "wow")
 	})
+	t.Run("SwitchRepoDir", func(t *testing.T) {
+		t.Parallel()
+		_, root := clitest.New(t)
+		testRepo := testGitRepo(t, root)
+
+		// nolint:gosec
+		err := os.WriteFile(filepath.Join(testRepo, ".bashrc"), []byte("wow"), 0o750)
+		require.NoError(t, err)
+
+		c := exec.Command("git", "add", ".bashrc")
+		c.Dir = testRepo
+		err = c.Run()
+		require.NoError(t, err)
+
+		c = exec.Command("git", "commit", "-m", `"add .bashrc"`)
+		c.Dir = testRepo
+		out, err := c.CombinedOutput()
+		require.NoError(t, err, string(out))
+
+		inv, _ := clitest.New(t, "dotfiles", "--global-config", string(root), "--symlink-dir", string(root), "--repo-dir", "testrepo", "-y", testRepo)
+		err = inv.Run()
+		require.NoError(t, err)
+
+		b, err := os.ReadFile(filepath.Join(string(root), ".bashrc"))
+		require.NoError(t, err)
+		require.Equal(t, string(b), "wow")
+
+		stat, staterr := os.Stat(filepath.Join(string(root), "testrepo"))
+		require.NoError(t, staterr)
+		require.True(t, stat.IsDir())
+	})
+	t.Run("SwitchRepoDirRelative", func(t *testing.T) {
+		t.Parallel()
+		_, root := clitest.New(t)
+		testRepo := testGitRepo(t, root)
+
+		// nolint:gosec
+		err := os.WriteFile(filepath.Join(testRepo, ".bashrc"), []byte("wow"), 0o750)
+		require.NoError(t, err)
+
+		c := exec.Command("git", "add", ".bashrc")
+		c.Dir = testRepo
+		err = c.Run()
+		require.NoError(t, err)
+
+		c = exec.Command("git", "commit", "-m", `"add .bashrc"`)
+		c.Dir = testRepo
+		out, err := c.CombinedOutput()
+		require.NoError(t, err, string(out))
+
+		inv, _ := clitest.New(t, "dotfiles", "--global-config", string(root), "--symlink-dir", string(root), "--repo-dir", "./relrepo", "-y", testRepo)
+		err = inv.Run()
+		require.NoError(t, err)
+
+		b, err := os.ReadFile(filepath.Join(string(root), ".bashrc"))
+		require.NoError(t, err)
+		require.Equal(t, string(b), "wow")
+
+		stat, staterr := os.Stat(filepath.Join(string(root), "relrepo"))
+		require.NoError(t, staterr)
+		require.True(t, stat.IsDir())
+	})
 	t.Run("InstallScript", func(t *testing.T) {
+		t.Parallel()
 		if runtime.GOOS == "windows" {
 			t.Skip("install scripts on windows require sh and aren't very practical")
 		}
@@ -56,7 +121,7 @@ func TestDotfiles(t *testing.T) {
 		testRepo := testGitRepo(t, root)
 
 		// nolint:gosec
-		err := os.WriteFile(filepath.Join(testRepo, "install.sh"), []byte("#!/bin/bash\necho wow > "+filepath.Join(string(root), ".bashrc")), 0750)
+		err := os.WriteFile(filepath.Join(testRepo, "install.sh"), []byte("#!/bin/bash\necho wow > "+filepath.Join(string(root), ".bashrc")), 0o750)
 		require.NoError(t, err)
 
 		c := exec.Command("git", "add", "install.sh")
@@ -69,8 +134,89 @@ func TestDotfiles(t *testing.T) {
 		err = c.Run()
 		require.NoError(t, err)
 
-		cmd, _ := clitest.New(t, "dotfiles", "--global-config", string(root), "--symlink-dir", string(root), "-y", testRepo)
-		err = cmd.Execute()
+		inv, _ := clitest.New(t, "dotfiles", "--global-config", string(root), "--symlink-dir", string(root), "-y", testRepo)
+		err = inv.Run()
+		require.NoError(t, err)
+
+		b, err := os.ReadFile(filepath.Join(string(root), ".bashrc"))
+		require.NoError(t, err)
+		require.Equal(t, string(b), "wow\n")
+	})
+
+	t.Run("NestedInstallScript", func(t *testing.T) {
+		t.Parallel()
+		if runtime.GOOS == "windows" {
+			t.Skip("install scripts on windows require sh and aren't very practical")
+		}
+		_, root := clitest.New(t)
+		testRepo := testGitRepo(t, root)
+
+		scriptPath := filepath.Join("script", "setup")
+		err := os.MkdirAll(filepath.Join(testRepo, "script"), 0o750)
+		require.NoError(t, err)
+		// nolint:gosec
+		err = os.WriteFile(filepath.Join(testRepo, scriptPath), []byte("#!/bin/bash\necho wow > "+filepath.Join(string(root), ".bashrc")), 0o750)
+		require.NoError(t, err)
+
+		c := exec.Command("git", "add", scriptPath)
+		c.Dir = testRepo
+		err = c.Run()
+		require.NoError(t, err)
+
+		c = exec.Command("git", "commit", "-m", `"add script"`)
+		c.Dir = testRepo
+		err = c.Run()
+		require.NoError(t, err)
+
+		inv, _ := clitest.New(t, "dotfiles", "--global-config", string(root), "--symlink-dir", string(root), "-y", testRepo)
+		err = inv.Run()
+		require.NoError(t, err)
+
+		b, err := os.ReadFile(filepath.Join(string(root), ".bashrc"))
+		require.NoError(t, err)
+		require.Equal(t, string(b), "wow\n")
+	})
+
+	t.Run("InstallScriptChangeBranch", func(t *testing.T) {
+		t.Parallel()
+		if runtime.GOOS == "windows" {
+			t.Skip("install scripts on windows require sh and aren't very practical")
+		}
+		_, root := clitest.New(t)
+		testRepo := testGitRepo(t, root)
+
+		// We need an initial commit to start the `main` branch
+		c := exec.Command("git", "commit", "--allow-empty", "-m", `"initial commit"`)
+		c.Dir = testRepo
+		err := c.Run()
+		require.NoError(t, err)
+
+		// nolint:gosec
+		err = os.WriteFile(filepath.Join(testRepo, "install.sh"), []byte("#!/bin/bash\necho wow > "+filepath.Join(string(root), ".bashrc")), 0o750)
+		require.NoError(t, err)
+
+		c = exec.Command("git", "checkout", "-b", "other_branch")
+		c.Dir = testRepo
+		err = c.Run()
+		require.NoError(t, err)
+
+		c = exec.Command("git", "add", "install.sh")
+		c.Dir = testRepo
+		err = c.Run()
+		require.NoError(t, err)
+
+		c = exec.Command("git", "commit", "-m", `"add install.sh"`)
+		c.Dir = testRepo
+		err = c.Run()
+		require.NoError(t, err)
+
+		c = exec.Command("git", "checkout", "main")
+		c.Dir = testRepo
+		err = c.Run()
+		require.NoError(t, err)
+
+		inv, _ := clitest.New(t, "dotfiles", "--global-config", string(root), "--symlink-dir", string(root), "-y", testRepo, "-b", "other_branch")
+		err = inv.Run()
 		require.NoError(t, err)
 
 		b, err := os.ReadFile(filepath.Join(string(root), ".bashrc"))
@@ -78,16 +224,17 @@ func TestDotfiles(t *testing.T) {
 		require.Equal(t, string(b), "wow\n")
 	})
 	t.Run("SymlinkBackup", func(t *testing.T) {
+		t.Parallel()
 		_, root := clitest.New(t)
 		testRepo := testGitRepo(t, root)
 
 		// nolint:gosec
-		err := os.WriteFile(filepath.Join(testRepo, ".bashrc"), []byte("wow"), 0750)
+		err := os.WriteFile(filepath.Join(testRepo, ".bashrc"), []byte("wow"), 0o750)
 		require.NoError(t, err)
 
 		// add a conflicting file at destination
 		// nolint:gosec
-		err = os.WriteFile(filepath.Join(string(root), ".bashrc"), []byte("backup"), 0750)
+		err = os.WriteFile(filepath.Join(string(root), ".bashrc"), []byte("backup"), 0o750)
 		require.NoError(t, err)
 
 		c := exec.Command("git", "add", ".bashrc")
@@ -100,8 +247,8 @@ func TestDotfiles(t *testing.T) {
 		out, err := c.CombinedOutput()
 		require.NoError(t, err, string(out))
 
-		cmd, _ := clitest.New(t, "dotfiles", "--global-config", string(root), "--symlink-dir", string(root), "-y", testRepo)
-		err = cmd.Execute()
+		inv, _ := clitest.New(t, "dotfiles", "--global-config", string(root), "--symlink-dir", string(root), "-y", testRepo)
+		err = inv.Run()
 		require.NoError(t, err)
 
 		b, err := os.ReadFile(filepath.Join(string(root), ".bashrc"))
@@ -112,6 +259,17 @@ func TestDotfiles(t *testing.T) {
 		b, err = os.ReadFile(filepath.Join(string(root), ".bashrc.bak"))
 		require.NoError(t, err)
 		require.Equal(t, string(b), "backup")
+
+		// check for idempotency
+		inv, _ = clitest.New(t, "dotfiles", "--global-config", string(root), "--symlink-dir", string(root), "-y", testRepo)
+		err = inv.Run()
+		require.NoError(t, err)
+		b, err = os.ReadFile(filepath.Join(string(root), ".bashrc"))
+		require.NoError(t, err)
+		require.Equal(t, string(b), "wow")
+		b, err = os.ReadFile(filepath.Join(string(root), ".bashrc.bak"))
+		require.NoError(t, err)
+		require.Equal(t, string(b), "backup")
 	})
 }
 
@@ -119,7 +277,7 @@ func testGitRepo(t *testing.T, root config.Root) string {
 	r, err := cryptorand.String(8)
 	require.NoError(t, err)
 	dir := filepath.Join(string(root), fmt.Sprintf("test-repo-%s", r))
-	err = os.MkdirAll(dir, 0750)
+	err = os.MkdirAll(dir, 0o750)
 	require.NoError(t, err)
 
 	c := exec.Command("git", "init")
@@ -133,6 +291,11 @@ func testGitRepo(t *testing.T, root config.Root) string {
 	require.NoError(t, err)
 
 	c = exec.Command("git", "config", "user.name", "C I")
+	c.Dir = dir
+	err = c.Run()
+	require.NoError(t, err)
+
+	c = exec.Command("git", "checkout", "-b", "main")
 	c.Dir = dir
 	err = c.Run()
 	require.NoError(t, err)

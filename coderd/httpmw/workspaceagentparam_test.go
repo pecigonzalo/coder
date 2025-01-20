@@ -2,22 +2,23 @@ package httpmw_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/databasefake"
-	"github.com/coder/coder/coderd/httpmw"
-	"github.com/coder/coder/codersdk"
-	"github.com/coder/coder/cryptorand"
+	"cdr.dev/slog"
+	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
+	"github.com/coder/coder/v2/coderd/database/dbgen"
+	"github.com/coder/coder/v2/coderd/database/dbmem"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func TestWorkspaceAgentParam(t *testing.T) {
@@ -25,71 +26,40 @@ func TestWorkspaceAgentParam(t *testing.T) {
 
 	setupAuthentication := func(db database.Store) (*http.Request, database.WorkspaceAgent) {
 		var (
-			id, secret = randomAPIKeyParts()
-			hashed     = sha256.Sum256([]byte(secret))
+			user     = dbgen.User(t, db, database.User{})
+			_, token = dbgen.APIKey(t, db, database.APIKey{
+				UserID: user.ID,
+			})
+			tpl       = dbgen.Template(t, db, database.Template{})
+			workspace = dbgen.Workspace(t, db, database.WorkspaceTable{
+				OwnerID:    user.ID,
+				TemplateID: tpl.ID,
+			})
+			build = dbgen.WorkspaceBuild(t, db, database.WorkspaceBuild{
+				WorkspaceID: workspace.ID,
+				Transition:  database.WorkspaceTransitionStart,
+				Reason:      database.BuildReasonInitiator,
+			})
+			job = dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+				ID:            build.JobID,
+				Type:          database.ProvisionerJobTypeWorkspaceBuild,
+				Provisioner:   database.ProvisionerTypeEcho,
+				StorageMethod: database.ProvisionerStorageMethodFile,
+			})
+			resource = dbgen.WorkspaceResource(t, db, database.WorkspaceResource{
+				JobID:      job.ID,
+				Transition: database.WorkspaceTransitionStart,
+			})
+			agent = dbgen.WorkspaceAgent(t, db, database.WorkspaceAgent{
+				ResourceID: resource.ID,
+			})
 		)
+
 		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set(codersdk.SessionCustomHeader, fmt.Sprintf("%s-%s", id, secret))
-
-		userID := uuid.New()
-		username, err := cryptorand.String(8)
-		require.NoError(t, err)
-		user, err := db.InsertUser(r.Context(), database.InsertUserParams{
-			ID:             userID,
-			Email:          "testaccount@coder.com",
-			HashedPassword: hashed[:],
-			Username:       username,
-			CreatedAt:      database.Now(),
-			UpdatedAt:      database.Now(),
-		})
-		require.NoError(t, err)
-
-		_, err = db.InsertAPIKey(r.Context(), database.InsertAPIKeyParams{
-			ID:           id,
-			UserID:       user.ID,
-			HashedSecret: hashed[:],
-			LastUsed:     database.Now(),
-			ExpiresAt:    database.Now().Add(time.Minute),
-			LoginType:    database.LoginTypePassword,
-			Scope:        database.APIKeyScopeAll,
-		})
-		require.NoError(t, err)
-
-		workspace, err := db.InsertWorkspace(context.Background(), database.InsertWorkspaceParams{
-			ID:         uuid.New(),
-			TemplateID: uuid.New(),
-			OwnerID:    user.ID,
-			Name:       "potato",
-		})
-		require.NoError(t, err)
-
-		build, err := db.InsertWorkspaceBuild(context.Background(), database.InsertWorkspaceBuildParams{
-			ID:          uuid.New(),
-			WorkspaceID: workspace.ID,
-			JobID:       uuid.New(),
-		})
-		require.NoError(t, err)
-
-		job, err := db.InsertProvisionerJob(context.Background(), database.InsertProvisionerJobParams{
-			ID:   build.JobID,
-			Type: database.ProvisionerJobTypeWorkspaceBuild,
-		})
-		require.NoError(t, err)
-
-		resource, err := db.InsertWorkspaceResource(context.Background(), database.InsertWorkspaceResourceParams{
-			ID:    uuid.New(),
-			JobID: job.ID,
-		})
-		require.NoError(t, err)
-
-		agent, err := db.InsertWorkspaceAgent(context.Background(), database.InsertWorkspaceAgentParams{
-			ID:         uuid.New(),
-			ResourceID: resource.ID,
-		})
-		require.NoError(t, err)
+		r.Header.Set(codersdk.SessionTokenHeader, token)
 
 		ctx := chi.NewRouteContext()
-		ctx.URLParams.Add("user", userID.String())
+		ctx.URLParams.Add("user", user.ID.String())
 		ctx.URLParams.Add("workspaceagent", agent.ID.String())
 		r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, ctx))
 		return r, agent
@@ -97,7 +67,7 @@ func TestWorkspaceAgentParam(t *testing.T) {
 
 	t.Run("None", func(t *testing.T) {
 		t.Parallel()
-		db := databasefake.New()
+		db := dbmem.New()
 		rtr := chi.NewRouter()
 		rtr.Use(httpmw.ExtractWorkspaceBuildParam(db))
 		rtr.Get("/", nil)
@@ -112,7 +82,7 @@ func TestWorkspaceAgentParam(t *testing.T) {
 
 	t.Run("NotFound", func(t *testing.T) {
 		t.Parallel()
-		db := databasefake.New()
+		db := dbmem.New()
 		rtr := chi.NewRouter()
 		rtr.Use(httpmw.ExtractWorkspaceAgentParam(db))
 		rtr.Get("/", nil)
@@ -127,12 +97,42 @@ func TestWorkspaceAgentParam(t *testing.T) {
 		require.Equal(t, http.StatusNotFound, res.StatusCode)
 	})
 
-	t.Run("WorkspaceAgent", func(t *testing.T) {
+	t.Run("NotAuthorized", func(t *testing.T) {
 		t.Parallel()
-		db := databasefake.New()
+		db := dbmem.New()
+		fakeAuthz := (&coderdtest.FakeAuthorizer{}).AlwaysReturn(xerrors.Errorf("constant failure"))
+		dbFail := dbauthz.New(db, fakeAuthz, slog.Make(), coderdtest.AccessControlStorePointer())
+
 		rtr := chi.NewRouter()
 		rtr.Use(
-			httpmw.ExtractAPIKey(httpmw.ExtractAPIKeyConfig{
+			httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
+				DB:              db,
+				RedirectToLogin: false,
+			}),
+			// Only fail authz in this middleware
+			httpmw.ExtractWorkspaceAgentParam(dbFail),
+		)
+		rtr.Get("/", func(rw http.ResponseWriter, r *http.Request) {
+			_ = httpmw.WorkspaceAgentParam(r)
+			rw.WriteHeader(http.StatusOK)
+		})
+
+		r, _ := setupAuthentication(db)
+
+		rw := httptest.NewRecorder()
+		rtr.ServeHTTP(rw, r)
+
+		res := rw.Result()
+		defer res.Body.Close()
+		require.Equal(t, http.StatusNotFound, res.StatusCode)
+	})
+
+	t.Run("WorkspaceAgent", func(t *testing.T) {
+		t.Parallel()
+		db := dbmem.New()
+		rtr := chi.NewRouter()
+		rtr.Use(
+			httpmw.ExtractAPIKeyMW(httpmw.ExtractAPIKeyConfig{
 				DB:              db,
 				RedirectToLogin: false,
 			}),

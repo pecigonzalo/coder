@@ -20,67 +20,84 @@ AND
 LIMIT
 	1;
 
--- name: GetUserGroups :many
+-- name: GetGroups :many
 SELECT
-	groups.*
+		sqlc.embed(groups),
+		organizations.name AS organization_name,
+		organizations.display_name AS organization_display_name
 FROM
-	groups
-JOIN
-	group_members
-ON
-	groups.id = group_members.group_id
+		groups
+INNER JOIN
+		organizations ON groups.organization_id = organizations.id
 WHERE
-	group_members.user_id = $1;
-
--- name: GetGroupMembers :many
-SELECT
-	users.*
-FROM
-	users
-JOIN
-	group_members
-ON
-	users.id = group_members.user_id
-WHERE
-	group_members.group_id = $1
-AND
-	users.status = 'active'
-AND
-	users.deleted = 'false';
-
--- name: GetAllOrganizationMembers :many
-SELECT
-	users.*
-FROM
-	users
-JOIN
-	organization_members
-ON
-	users.id = organization_members.user_id
-WHERE
-	organization_members.organization_id = $1;
-
--- name: GetGroupsByOrganizationID :many
-SELECT
-	*
-FROM
-	groups
-WHERE
-	organization_id = $1
-AND
-	id != $1;
+		true
+		AND CASE
+				WHEN @organization_id:: uuid != '00000000-0000-0000-0000-000000000000'::uuid THEN
+						groups.organization_id = @organization_id
+				ELSE true
+		END
+		AND CASE
+				-- Filter to only include groups a user is a member of
+				WHEN @has_member_id::uuid != '00000000-0000-0000-0000-000000000000'::uuid THEN
+						EXISTS (
+								SELECT
+										1
+								FROM
+										-- this view handles the 'everyone' group in orgs.
+										group_members_expanded
+								WHERE
+										group_members_expanded.group_id = groups.id
+								AND
+										group_members_expanded.user_id = @has_member_id
+						)
+				ELSE true
+		END
+		AND CASE WHEN array_length(@group_names :: text[], 1) > 0  THEN
+				groups.name = ANY(@group_names)
+			ELSE true
+		END
+		AND CASE WHEN array_length(@group_ids :: uuid[], 1) > 0  THEN
+				groups.id = ANY(@group_ids)
+			ELSE true
+		END
+;
 
 -- name: InsertGroup :one
 INSERT INTO groups (
 	id,
 	name,
-	organization_id
+	display_name,
+	organization_id,
+	avatar_url,
+	quota_allowance
 )
 VALUES
-	( $1, $2, $3) RETURNING *;
+	($1, $2, $3, $4, $5, $6) RETURNING *;
+
+-- name: InsertMissingGroups :many
+-- Inserts any group by name that does not exist. All new groups are given
+-- a random uuid, are inserted into the same organization. They have the default
+-- values for avatar, display name, and quota allowance (all zero values).
+INSERT INTO groups (
+	id,
+	name,
+	organization_id,
+						source
+)
+SELECT
+						gen_random_uuid(),
+						group_name,
+						@organization_id,
+						@source
+FROM
+						UNNEST(@group_names :: text[]) AS group_name
+-- If the name conflicts, do nothing.
+ON CONFLICT DO NOTHING
+RETURNING *;
+
 
 -- We use the organization_id as the id
--- for simplicity since all users is 
+-- for simplicity since all users is
 -- every member of the org.
 -- name: InsertAllUsersGroup :one
 INSERT INTO groups (
@@ -89,34 +106,22 @@ INSERT INTO groups (
 	organization_id
 )
 VALUES
-	( sqlc.arg(organization_id), 'Everyone', sqlc.arg(organization_id)) RETURNING *;
+	(sqlc.arg(organization_id), 'Everyone', sqlc.arg(organization_id)) RETURNING *;
 
 -- name: UpdateGroupByID :one
 UPDATE
 	groups
 SET
-	name = $1
+	name = @name,
+	display_name = @display_name,
+	avatar_url = @avatar_url,
+	quota_allowance = @quota_allowance
 WHERE
-	id = $2
+	id = @id
 RETURNING *;
 
--- name: InsertGroupMember :exec
-INSERT INTO group_members (
-	user_id,
-	group_id
-)
-VALUES ( $1, $2);
-
--- name: DeleteGroupMember :exec
-DELETE FROM 
-	group_members 
-WHERE
-	user_id = $1;
-
 -- name: DeleteGroupByID :exec
-DELETE FROM 
-	groups 
+DELETE FROM
+	groups
 WHERE
 	id = $1;
-
-

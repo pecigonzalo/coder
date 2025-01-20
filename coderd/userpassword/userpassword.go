@@ -10,9 +10,12 @@ import (
 	"strconv"
 	"strings"
 
+	passwordvalidator "github.com/wagslane/go-password-validator"
 	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/exp/slices"
 	"golang.org/x/xerrors"
+
+	"github.com/coder/coder/v2/coderd/util/lazy"
 )
 
 var (
@@ -37,8 +40,15 @@ var (
 	defaultSaltSize = 16
 
 	// The simulated hash is used when trying to simulate password checks for
-	// users that don't exist.
-	simulatedHash, _ = Hash("hunter2")
+	// users that don't exist. It's meant to preserve the timing of the hash
+	// comparison.
+	simulatedHash = lazy.New(func() string {
+		h, err := Hash("hunter2")
+		if err != nil {
+			panic(err)
+		}
+		return h
+	})
 )
 
 // Make password hashing much faster in tests.
@@ -64,7 +74,9 @@ func init() {
 func Compare(hashed string, password string) (bool, error) {
 	// If the hased password provided is empty, simulate comparing a real hash.
 	if hashed == "" {
-		hashed = simulatedHash
+		// TODO: this seems ripe for creating a vulnerability where
+		// hunter2 can log into any account.
+		hashed = simulatedHash.Load()
 	}
 
 	if len(hashed) < hashLength {
@@ -125,15 +137,14 @@ func hashWithSaltAndIter(password string, salt []byte, iter int) string {
 // Validate checks that the plain text password meets the minimum password requirements.
 // It returns properly formatted errors for detailed form validation on the client.
 func Validate(password string) error {
-	const (
-		minLength = 8
-		maxLength = 64
-	)
-	if len(password) < minLength {
-		return xerrors.Errorf("Password must be at least %d characters.", minLength)
+	// Ensure passwords are secure enough!
+	// See: https://github.com/wagslane/go-password-validator#what-entropy-value-should-i-use
+	err := passwordvalidator.Validate(password, 52)
+	if err != nil {
+		return err
 	}
-	if len(password) > maxLength {
-		return xerrors.Errorf("Password must be no more than %d characters.", maxLength)
+	if len(password) > 64 {
+		return xerrors.Errorf("password must be no more than %d characters", 64)
 	}
 	return nil
 }

@@ -2,7 +2,10 @@
 set -eu
 
 # Coder's automatic install script.
-# See https://github.com/coder/coder#installing-coder
+# See https://github.com/coder/coder#install
+#
+# To run:
+# curl -L https://coder.com/install.sh | sh
 
 usage() {
 	arg0="$0"
@@ -23,17 +26,20 @@ The remote host must have internet access.
 ${not_curl_usage-}
 Usage:
 
-  $arg0 [--dry-run] [--version X.X.X] [--edge] [--method detect] \
+  ${arg0} [--dry-run] [--mainline | --stable | --version X.X.X] [--method detect] \
         [--prefix ~/.local] [--rsh ssh] [user@host]
 
   --dry-run
       Echo the commands for the install process without running them.
 
+  --mainline
+      Install the latest mainline version (default).
+
+  --stable
+	  Install the latest stable version instead of the latest mainline version.
+
   --version X.X.X
       Install a specific version instead of the latest.
-
-  --edge
-      Install the latest edge version instead of the latest stable version.
 
   --method [detect | standalone]
       Choose the installation method. Defaults to detect.
@@ -44,8 +50,8 @@ Usage:
   --prefix <dir>
       Sets the prefix used by standalone release archives. Defaults to /usr/local
       and the binary is copied into /usr/local/bin
-      To install in \$HOME, pass ---prefix=\$HOME/.local
-	
+      To install in \$HOME, pass --prefix=\$HOME/.local
+
   --binary-name <name>
 	  Sets the name for the CLI in standalone release archives. Defaults to "coder"
 	  To use the CLI as coder2, pass --binary-name=coder2
@@ -54,12 +60,26 @@ Usage:
   --rsh <bin>
       Specifies the remote shell for remote installation. Defaults to ssh.
 
+  --with-terraform
+	  Installs Terraform binary from https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/ source
+	  alongside coder.
+	  This is great for if you are having issues with Coder installing terraform, or if you
+	  just want it on your base system aswell.
+	  This supports most systems, however if you are unsure yours is supported you can check
+	  the link above.
+  --net-admin
+	  Adds \`CAP_NET_ADMIN\` to the installed binary. This allows Coder to
+	  increase network speeds, but has security implications.
+	  See: https://man7.org/linux/man-pages/man7/capabilities.7.html
+	  This only works on Linux based systems.
+
+
 The detection method works as follows:
   - Debian, Ubuntu, Raspbian: install the deb package from GitHub.
   - Fedora, CentOS, RHEL, openSUSE: install the rpm package from GitHub.
   - Alpine: install the apk package from GitHub.
-  - macOS: install the release from GitHub.
-  - All others: install the release from GitHub.
+  - macOS:  if \`brew\` is available, install from the coder/coder Homebrew tap.
+  - Otherwise, download from GitHub and install into \`--prefix\`.
 
 We build releases on GitHub for amd64, armv7, and arm64 on Windows, Linux, and macOS.
 
@@ -71,16 +91,48 @@ The installer will cache all downloaded assets into ~/.cache/coder
 EOF
 }
 
-echo_latest_version() {
-	if [ "${EDGE-}" ]; then
-		version="$(curl -fsSL https://api.github.com/repos/coder/coder/releases | awk 'match($0,/.*"html_url": "(.*\/releases\/tag\/.*)".*/)' | head -n 1 | awk -F '"' '{print $4}')"
-	else
-		# https://gist.github.com/lukechilds/a83e1d7127b78fef38c2914c4ececc3c#gistcomment-2758860
-		version="$(curl -fsSLI -o /dev/null -w "%{url_effective}" https://github.com/coder/coder/releases/latest)"
+echo_latest_stable_version() {
+	url="https://github.com/coder/coder/releases/latest"
+	# https://gist.github.com/lukechilds/a83e1d7127b78fef38c2914c4ececc3c#gistcomment-2758860
+	response=$(curl -sSLI -o /dev/null -w "\n%{http_code} %{url_effective}" ${url})
+	status_code=$(echo "$response" | tail -n1 | cut -d' ' -f1)
+	version=$(echo "$response" | tail -n1 | cut -d' ' -f2-)
+	body=$(echo "$response" | sed '$d')
+
+	if [ "$status_code" != "200" ]; then
+		echoerr "GitHub API returned status code: ${status_code}"
+		echoerr "URL: ${url}"
+		exit 1
 	fi
-	version="${version#https://github.com/coder/coder/releases/tag/}"
-	version="${version#v}"
-	echo "$version"
+
+	version="${version#https://github.com/coder/coder/releases/tag/v}"
+	echo "${version}"
+}
+
+echo_latest_mainline_version() {
+	# Fetch the releases from the GitHub API, sort by version number,
+	# and take the first result. Note that we're sorting by space-
+	# separated numbers and without utilizing the sort -V flag for the
+	# best compatibility.
+	url="https://api.github.com/repos/coder/coder/releases"
+	response=$(curl -sSL -w "\n%{http_code}" ${url})
+	status_code=$(echo "$response" | tail -n1)
+	body=$(echo "$response" | sed '$d')
+
+	if [ "$status_code" != "200" ]; then
+		echoerr "GitHub API returned status code: ${status_code}"
+		echoerr "URL: ${url}"
+		echoerr "Response body: ${body}"
+		exit 1
+	fi
+
+	echo "$body" |
+		awk -F'"' '/"tag_name"/ {print $4}' |
+		tr -d v |
+		tr . ' ' |
+		sort -k1,1nr -k2,2nr -k3,3nr |
+		head -n1 |
+		tr ' ' .
 }
 
 echo_standalone_postinstall() {
@@ -89,22 +141,81 @@ echo_standalone_postinstall() {
 		return
 	fi
 
+	channel=
+	advisory="To install our stable release (v${STABLE_VERSION}), use the --stable flag. "
+	if [ "${STABLE}" = 1 ]; then
+		channel="stable "
+		advisory=""
+	fi
+	if [ "${MAINLINE}" = 1 ]; then
+		channel="mainline "
+	fi
+
 	cath <<EOF
 
-Standalone release has been installed into $STANDALONE_INSTALL_PREFIX/bin/$STANDALONE_BINARY_NAME
+Coder ${channel}release v${VERSION} installed. ${advisory}See our releases documentation or GitHub for more information on versioning.
+
+The Coder binary has been placed in the following location:
+
+  $STANDALONE_INSTALL_PREFIX/bin/$STANDALONE_BINARY_NAME
 
 EOF
 
-	if [ "$STANDALONE_INSTALL_PREFIX" != /usr/local ]; then
+	CODER_COMMAND="$(command -v "$STANDALONE_BINARY_NAME" || true)"
+
+	if [ -z "${CODER_COMMAND}" ]; then
 		cath <<EOF
 Extend your path to use Coder:
-PATH="$STANDALONE_INSTALL_PREFIX/bin:\$PATH"
+
+  $ PATH="$STANDALONE_INSTALL_PREFIX/bin:\$PATH"
+
+EOF
+	elif [ "$CODER_COMMAND" != "$STANDALONE_BINARY_LOCATION" ]; then
+		echo_path_conflict "$CODER_COMMAND"
+	else
+		cath <<EOF
+To run a Coder server:
+
+  $ $STANDALONE_BINARY_NAME server
+
+To connect to a Coder deployment:
+
+  $ $STANDALONE_BINARY_NAME login <deployment url>
 
 EOF
 	fi
+}
+
+echo_brew_postinstall() {
+	if [ "${DRY_RUN-}" ]; then
+		echo_dryrun_postinstall
+		return
+	fi
+
+	BREW_PREFIX="$(brew --prefix)"
+
 	cath <<EOF
-Run Coder:
-  $STANDALONE_BINARY_NAME server
+
+Coder has been installed to
+
+  $BREW_PREFIX/bin/coder
+
+EOF
+
+	CODER_COMMAND="$(command -v "coder" || true)"
+
+	if [ "$CODER_COMMAND" != "$BREW_PREFIX/bin/coder" ]; then
+		echo_path_conflict "$CODER_COMMAND"
+	fi
+
+	cath <<EOF
+To run a Coder server:
+
+  $ coder server
+
+To connect to a Coder deployment:
+
+  $ coder login <deployment url>
 
 EOF
 }
@@ -119,32 +230,51 @@ echo_systemd_postinstall() {
 	cath <<EOF
 $1 package has been installed.
 
-To run Coder as a system service:
+To run a Coder server:
 
-  # Optional) Set up an external access URL
-  $ sudo vim /etc/coder.d/coder.env
-  # Use systemd to start Coder now and on reboot
+  # Start Coder now and on reboot
   $ sudo systemctl enable --now coder
-  # View the logs to ensure a successful start
   $ journalctl -u coder.service -b
 
-Or, just run the server directly:
-
+  # Or just run the server directly
   $ coder server
+
+  Configuring Coder: https://coder.com/docs/admin/setup
+
+To connect to a Coder deployment:
+
+  $ coder login <deployment url>
 
 EOF
 }
 
 echo_dryrun_postinstall() {
 	cath <<EOF
-
 Dry-run complete.
 
 To install Coder, re-run this script without the --dry-run flag.
+
+EOF
+}
+
+echo_path_conflict() {
+	cath <<EOF
+There is another binary in your PATH that conflicts with the binary we've installed.
+
+  $1
+
+This is likely because of an existing installation of Coder in your \$PATH.
+
+Run \`which -a coder\` to view all installations.
+
 EOF
 }
 
 main() {
+	MAINLINE=1
+	STABLE=0
+	TERRAFORM_VERSION="1.9.8"
+
 	if [ "${TRACE-}" ]; then
 		set -x
 	fi
@@ -155,10 +285,12 @@ main() {
 		OPTIONAL \
 		ALL_FLAGS \
 		RSH_ARGS \
-		EDGE \
-		RSH
+		RSH \
+		WITH_TERRAFORM \
+		CAP_NET_ADMIN
 
 	ALL_FLAGS=""
+
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 		-*)
@@ -193,13 +325,25 @@ main() {
 			;;
 		--version)
 			VERSION="$(parse_arg "$@")"
+			MAINLINE=0
+			STABLE=0
 			shift
 			;;
 		--version=*)
 			VERSION="$(parse_arg "$@")"
+			MAINLINE=0
+			STABLE=0
 			;;
-		--edge)
-			EDGE=1
+		# Support edge for backward compatibility.
+		--mainline | --edge)
+			VERSION=
+			MAINLINE=1
+			STABLE=0
+			;;
+		--stable)
+			VERSION=
+			MAINLINE=0
+			STABLE=1
 			;;
 		--rsh)
 			RSH="$(parse_arg "$@")"
@@ -211,6 +355,12 @@ main() {
 		-h | --h | -help | --help)
 			usage
 			exit 0
+			;;
+		--with-terraform)
+			WITH_TERRAFORM=1
+			;;
+		--net-admin)
+			CAP_NET_ADMIN=1
 			;;
 		--)
 			shift
@@ -236,8 +386,21 @@ main() {
 	if [ "${RSH_ARGS-}" ]; then
 		RSH="${RSH-ssh}"
 		echoh "Installing remotely with $RSH $RSH_ARGS"
-		curl -fsSL https://coder.dev/install.sh | prefix "$RSH_ARGS" "$RSH" "$RSH_ARGS" sh -s -- "$ALL_FLAGS"
+		curl -fsSL https://coder.com/install.sh | prefix "$RSH_ARGS" "$RSH" "$RSH_ARGS" sh -s -- "$ALL_FLAGS"
 		return
+	fi
+
+	# These can be overridden for testing but shouldn't normally be used as it can
+	# result in a broken coder.
+	OS=${OS:-$(os)}
+	ARCH=${ARCH:-$(arch)}
+	TERRAFORM_ARCH=${TERRAFORM_ARCH:-$(terraform_arch)}
+
+	# If we've been provided a flag which is specific to the standalone installation
+	# method, we should "detect" standalone to be the appropriate installation method.
+	# This check needs to occur before we set these variables with defaults.
+	if [ "${STANDALONE_INSTALL_PREFIX-}" ] || [ "${STANDALONE_BINARY_NAME-}" ]; then
+		METHOD=standalone
 	fi
 
 	METHOD="${METHOD-detect}"
@@ -247,22 +410,52 @@ main() {
 		exit 1
 	fi
 
+	# We can't reasonably support installing specific versions of Coder through
+	# Homebrew, so if we're on macOS and the `--version` flag or the `--stable`
+	# flag (our tap follows mainline) was set, we should "detect" standalone to
+	# be the appropriate installation method. This check needs to occur before we
+	# set `VERSION` to a default of the latest release.
+	if [ "$OS" = "darwin" ] && { [ "${VERSION-}" ] || [ "${STABLE}" = 1 ]; }; then
+		METHOD=standalone
+	fi
+
 	# These are used by the various install_* functions that make use of GitHub
 	# releases in order to download and unpack the right release.
 	CACHE_DIR=$(echo_cache_dir)
+	TERRAFORM_INSTALL_PREFIX=${TERRAFORM_INSTALL_PREFIX:-/usr/local}
 	STANDALONE_INSTALL_PREFIX=${STANDALONE_INSTALL_PREFIX:-/usr/local}
 	STANDALONE_BINARY_NAME=${STANDALONE_BINARY_NAME:-coder}
-	VERSION=${VERSION:-$(echo_latest_version)}
-	# These can be overridden for testing but shouldn't normally be used as it can
-	# result in a broken coder.
-	OS=${OS:-$(os)}
-	ARCH=${ARCH:-$(arch)}
+	STABLE_VERSION=$(echo_latest_stable_version)
+	if [ "${MAINLINE}" = 1 ]; then
+		VERSION=$(echo_latest_mainline_version)
+		echoh "Resolved mainline version: v${VERSION}"
+	elif [ "${STABLE}" = 1 ]; then
+		VERSION=${STABLE_VERSION}
+		echoh "Resolved stable version: v${VERSION}"
+	fi
 
 	distro_name
 
 	if [ "${DRY_RUN-}" ]; then
 		echoh "Running with --dry-run; the following are the commands that would be run if this were a real installation:"
 		echoh
+	fi
+
+	# Start by installing Terraform, if requested
+	if [ "${WITH_TERRAFORM-}" ]; then
+		with_terraform
+	fi
+
+	# If the version is the same as the stable version, we're installing
+	# the stable version.
+	if [ "${MAINLINE}" = 1 ] && [ "${VERSION}" = "${STABLE_VERSION}" ]; then
+		echoh "The latest mainline version has been promoted to stable, selecting stable."
+		MAINLINE=0
+		STABLE=1
+	fi
+	# If the manually specified version is stable, mark it as such.
+	if [ "${MAINLINE}" = 0 ] && [ "${STABLE}" = 0 ] && [ "${VERSION}" = "${STABLE_VERSION}" ]; then
+		STABLE=1
 	fi
 
 	# Standalone installs by pulling pre-built releases from GitHub.
@@ -282,9 +475,7 @@ main() {
 	DISTRO=${DISTRO:-$(distro)}
 
 	case $DISTRO in
-	# macOS uses the standalone installation for now.
-	# Homebrew support is planned. See: https://github.com/coder/coder/issues/1925
-	macos) install_standalone ;;
+	darwin) install_macos ;;
 	# The .deb and .rpm files are pulled from GitHub.
 	debian) install_deb ;;
 	fedora | opensuse) install_rpm ;;
@@ -299,6 +490,26 @@ main() {
 		install_standalone
 		;;
 	esac
+
+	if [ "${CAP_NET_ADMIN:-}" ]; then
+		cap_net_admin
+	fi
+}
+
+cap_net_admin() {
+	if ! command_exists setcap && command_exists capsh; then
+		echo "Package 'libcap' not found. See install instructions for your distro: https://command-not-found.com/setcap"
+		return
+	fi
+
+	# Make sure we'e allowed to add CAP_NET_ADMIN.
+	if sudo_sh_c capsh --has-p=CAP_NET_ADMIN; then
+		sudo_sh_c setcap CAP_NET_ADMIN=+ep "$(command -v coder)" || true
+
+	# Unable to escalate perms, notify the user.
+	else
+		echo "Unable to setcap agent binary. Ensure the root user has CAP_NET_ADMIN permissions."
+	fi
 }
 
 parse_arg() {
@@ -351,6 +562,59 @@ fetch() {
 	sh_c mv "$FILE.incomplete" "$FILE"
 }
 
+with_terraform() {
+	# Check if the unzip package is installed. If not error peacefully.
+	if ! (command_exists unzip); then
+		echoh
+		echoerr "This script needs the unzip package to run."
+		echoerr "Please install unzip to use this function"
+		exit 1
+	fi
+	echoh "Installing Terraform version $TERRAFORM_VERSION $TERRAFORM_ARCH from the HashiCorp release repository."
+	echoh
+
+	# Download from official source and save it to cache
+	fetch "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_${OS}_${TERRAFORM_ARCH}.zip" \
+		"$CACHE_DIR/terraform_${TERRAFORM_VERSION}_${OS}_${TERRAFORM_ARCH}.zip"
+
+	sh_c mkdir -p "$TERRAFORM_INSTALL_PREFIX" 2>/dev/null || true
+
+	sh_c="sh_c"
+	if [ ! -w "$TERRAFORM_INSTALL_PREFIX" ]; then
+		sh_c="sudo_sh_c"
+	fi
+	# Prepare /usr/local/bin/ and the binary for copying
+	"$sh_c" mkdir -p "$TERRAFORM_INSTALL_PREFIX/bin"
+	"$sh_c" unzip -d "$CACHE_DIR" -o "$CACHE_DIR/terraform_${TERRAFORM_VERSION}_${OS}_${ARCH}.zip"
+	COPY_LOCATION="$TERRAFORM_INSTALL_PREFIX/bin/terraform"
+
+	# Remove the file if it already exists to
+	# avoid https://github.com/coder/coder/issues/2086
+	if [ -f "$COPY_LOCATION" ]; then
+		"$sh_c" rm "$COPY_LOCATION"
+	fi
+
+	# Copy the binary to the correct location.
+	"$sh_c" cp "$CACHE_DIR/terraform" "$COPY_LOCATION"
+}
+
+install_macos() {
+	# If there is no `brew` binary available, just default to installing standalone
+	if command_exists brew; then
+		echoh "Installing coder with Homebrew from the coder/coder tap."
+		echoh
+
+		sh_c brew install coder/coder/coder
+
+		echo_brew_postinstall
+		return
+	fi
+
+	echoh "Homebrew is not available."
+	echoh "Falling back to standalone installation."
+	install_standalone
+}
+
 install_deb() {
 	echoh "Installing v$VERSION of the $ARCH deb package from GitHub."
 	echoh
@@ -368,7 +632,7 @@ install_rpm() {
 
 	fetch "https://github.com/coder/coder/releases/download/v$VERSION/coder_${VERSION}_${OS}_${ARCH}.rpm" \
 		"$CACHE_DIR/coder_${VERSION}_${OS}_${ARCH}.rpm"
-	sudo_sh_c rpm -i "$CACHE_DIR/coder_${VERSION}_${OS}_${ARCH}.rpm"
+	sudo_sh_c rpm -U "$CACHE_DIR/coder_${VERSION}_${OS}_${ARCH}.rpm"
 
 	echo_systemd_postinstall rpm
 }
@@ -401,28 +665,33 @@ install_standalone() {
 	# fails we can ignore the error as the -w check will then swap us to sudo.
 	sh_c mkdir -p "$STANDALONE_INSTALL_PREFIX" 2>/dev/null || true
 
+	sh_c mkdir -p "$CACHE_DIR/tmp"
+	if [ "$STANDALONE_ARCHIVE_FORMAT" = tar.gz ]; then
+		sh_c tar -C "$CACHE_DIR/tmp" -xzf "$CACHE_DIR/coder_${VERSION}_${OS}_${ARCH}.tar.gz"
+	else
+		sh_c unzip -d "$CACHE_DIR/tmp" -o "$CACHE_DIR/coder_${VERSION}_${OS}_${ARCH}.zip"
+	fi
+
+	STANDALONE_BINARY_LOCATION="$STANDALONE_INSTALL_PREFIX/bin/$STANDALONE_BINARY_NAME"
+
 	sh_c="sh_c"
 	if [ ! -w "$STANDALONE_INSTALL_PREFIX" ]; then
 		sh_c="sudo_sh_c"
 	fi
 
 	"$sh_c" mkdir -p "$STANDALONE_INSTALL_PREFIX/bin"
-	if [ "$STANDALONE_ARCHIVE_FORMAT" = tar.gz ]; then
-		"$sh_c" tar -C "$CACHE_DIR" -xzf "$CACHE_DIR/coder_${VERSION}_${OS}_${ARCH}.tar.gz"
-	else
-		"$sh_c" unzip -d "$CACHE_DIR" -o "$CACHE_DIR/coder_${VERSION}_${OS}_${ARCH}.zip"
-	fi
-
-	COPY_LOCATION="$STANDALONE_INSTALL_PREFIX/bin/$STANDALONE_BINARY_NAME"
 
 	# Remove the file if it already exists to
 	# avoid https://github.com/coder/coder/issues/2086
-	if [ -f "$COPY_LOCATION" ]; then
-		"$sh_c" rm "$COPY_LOCATION"
+	if [ -f "$STANDALONE_BINARY_LOCATION" ]; then
+		"$sh_c" rm "$STANDALONE_BINARY_LOCATION"
 	fi
 
 	# Copy the binary to the correct location.
-	"$sh_c" cp "$CACHE_DIR/coder" "$COPY_LOCATION"
+	"$sh_c" cp "$CACHE_DIR/tmp/coder" "$STANDALONE_BINARY_LOCATION"
+
+	# Clean up the extracted files (note, not using sudo: $sh_c -> sh_c).
+	sh_c rm -rv "$CACHE_DIR/tmp"
 
 	echo_standalone_postinstall
 }
@@ -431,7 +700,7 @@ install_standalone() {
 has_standalone() {
 	case $ARCH in
 	amd64) return 0 ;;
-	ard64) return 0 ;;
+	arm64) return 0 ;;
 	armv7)
 		[ "$(distro)" != darwin ]
 		return
@@ -470,6 +739,7 @@ distro() {
 
 	if [ -f /etc/os-release ]; then
 		(
+			# shellcheck disable=SC1091
 			. /etc/os-release
 			if [ "${ID_LIKE-}" ]; then
 				for id_like in $ID_LIKE; do
@@ -496,6 +766,7 @@ distro_name() {
 
 	if [ -f /etc/os-release ]; then
 		(
+			# shellcheck disable=SC1091
 			. /etc/os-release
 			echo "$PRETTY_NAME"
 		)
@@ -512,6 +783,18 @@ arch() {
 	aarch64) echo arm64 ;;
 	x86_64) echo amd64 ;;
 	armv7l) echo armv7 ;;
+	*) echo "$uname_m" ;;
+	esac
+}
+
+# The following is to change the naming, that way people with armv7 won't receive a error
+# List of binaries can be found here: https://releases.hashicorp.com/terraform/
+terraform_arch() {
+	uname_m=$(uname -m)
+	case $uname_m in
+	aarch64) echo arm64 ;;
+	x86_64) echo amd64 ;;
+	armv7l) echo arm ;;
 	*) echo "$uname_m" ;;
 	esac
 }
@@ -533,13 +816,15 @@ sudo_sh_c() {
 		sh_c "$@"
 	elif command_exists sudo; then
 		sh_c "sudo $*"
+	elif command_exists doas; then
+		sh_c "doas $*"
 	elif command_exists su; then
 		sh_c "su - -c '$*'"
 	else
 		echoh
 		echoerr "This script needs to run the following command as root."
 		echoerr "  $*"
-		echoerr "Please install sudo or su."
+		echoerr "Please install sudo, su, or doas."
 		exit 1
 	fi
 }

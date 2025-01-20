@@ -1,23 +1,22 @@
-# Documentation 
+# Documentation
 
-This style guide is primarily for use with authoring documentation. 
-
+This style guide is primarily for use with authoring documentation.
 
 ## General guidelines
 
 - Use sentence case, even in titles (do not punctuate the title, though)
 - Use the second person
 - Use the active voice
-- Use plural nouns and pronouns (*they*, *their*, or *them*), especially when
+- Use plural nouns and pronouns (_they_, _their_, or _them_), especially when
   the specific number is uncertain (i.e., "Set up your environments" even though
   you don't know if the user will have one or many environments)
-- When writing documentation titles, use the noun form, not the gerund form (e.g., "Environment
-  Management" instead of "Managing Environments")
+- When writing documentation titles, use the noun form, not the gerund form
+  (e.g., "Environment Management" instead of "Managing Environments")
 - Context matters when you decide whether to capitalize something or not. For
-  example, ["A Job creates one or more
-  Pods..."](https://kubernetes.io/docs/concepts/workloads/controllers/job/) is
-  correct when writing about Kubernetes. However, in other contexts, neither
-  *job* nor *pods* would be capitalized. Please follow the conventions set forth
+  example,
+  ["A Job creates one or more Pods..."](https://kubernetes.io/docs/concepts/workloads/controllers/job/)
+  is correct when writing about Kubernetes. However, in other contexts, neither
+  _job_ nor _pods_ would be capitalized. Please follow the conventions set forth
   by the relevant companies and open source communities.
 
 ## Third-party references
@@ -25,11 +24,11 @@ This style guide is primarily for use with authoring documentation.
 If you have questions that aren't explicitly covered by this guide, consult the
 following third-party references:
 
-| **Type of guidance** | **Third-party reference** |
-| - | - |
-| Spelling | [Merriam-Webster.com](https://www.merriam-webster.com/) |
-| Style - nontechnical | [The Chicago Manual of Style](https://www.chicagomanualofstyle.org/home.html) |
-| Style - technical | [Microsoft Writing Style Guide](https://docs.microsoft.com/en-us/style-guide/welcome/) |
+| **Type of guidance** | **Third-party reference**                                                              |
+|----------------------|----------------------------------------------------------------------------------------|
+| Spelling             | [Merriam-Webster.com](https://www.merriam-webster.com/)                                |
+| Style - nontechnical | [The Chicago Manual of Style](https://www.chicagomanualofstyle.org/home.html)          |
+| Style - technical    | [Microsoft Writing Style Guide](https://docs.microsoft.com/en-us/style-guide/welcome/) |
 
 ## Tools
 
@@ -50,14 +49,14 @@ Use **bold** formatting when referring to UI elements.
 
 ### Italics
 
-Use *italics* for:
+Use _italics_ for:
 
 - Parameter names
 - Mathematical and version variables
 
 ### Code font
 
-Use *code font* for:
+Use _code font_ for:
 
 - User text input
 - Command-line utility names
@@ -68,7 +67,7 @@ Use *code font* for:
 - HTTP verbs, status codes, and content-type values
 - Placeholder variables
 
-Use *code blocks* for code samples and other blocks of code. Be sure to indicate
+Use _code blocks_ for code samples and other blocks of code. Be sure to indicate
 the language your using to apply the proper syntax highlighting.
 
 ```text
@@ -80,10 +79,10 @@ For code that you want users to enter via a command-line interface, use
 
 ### Punctuation
 
-Do not use the ampersand (&) as a shorthand for *and* unless you're referring to a
-UI element or the name of something that uses *&*.
+Do not use the ampersand (&) as a shorthand for _and_ unless you're referring to
+a UI element or the name of something that uses _&_.
 
-You can use the symbol `~` in place of the word *approximately*.
+You can use the symbol `~` in place of the word _approximately_.
 
 ### UI elements
 
@@ -92,13 +91,14 @@ and anything that has a name visible to the user, use bold font.
 
 **Example:** On the **Environment Overview** page, click **Configure SSH**.
 
-Don't use code font for UI elements unless it is rendered based on previously entered
-text. For example, if you tell the user to provide the environment name as
-`myEnvironment`, then use both bold and cold font when referring to the name.
+Don't use code font for UI elements unless it is rendered based on previously
+entered text. For example, if you tell the user to provide the environment name
+as `myEnvironment`, then use both bold and cold font when referring to the name.
 
 **Example**: Click **`myEnvironment`**.
 
-When writing out instructions that involve UI elements, both of the following options are acceptable:
+When writing out instructions that involve UI elements, both of the following
+options are acceptable:
 
 - Go to **Manage** > **Users**.
 - In the **Manage** menu, click **Users**.
@@ -112,13 +112,13 @@ Below summarizes the guidelines regarding how Coder terms should be used.
 The only Coder-specific terms that should be capitalized are the names of
 products (e.g., Coder).
 
-The exception is **code-server**, which is always lowercase. If it appears at the
-beginning of the sentence, rewrite the sentence to avoid this usage.
+The exception is **code-server**, which is always lowercase. If it appears at
+the beginning of the sentence, rewrite the sentence to avoid this usage.
 
 ### Uncapitalized terms
 
-In general, we do not capitalize the names of features (unless the situation calls for it,
-such as the word appearing at the beginning of a sentence):
+In general, we do not capitalize the names of features (unless the situation
+calls for it, such as the word appearing at the beginning of a sentence):
 
 - account dormancy
 - audit logs
@@ -147,4 +147,3 @@ We also do not capitalize the names of user roles:
 ## Standardized spellings
 
 - WiFi
-

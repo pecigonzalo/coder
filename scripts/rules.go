@@ -20,6 +20,88 @@ import (
 	"github.com/quasilyte/go-ruleguard/dsl/types"
 )
 
+// dbauthzAuthorizationContext is a lint rule that protects the usage of
+// system contexts. This is a dangerous pattern that can lead to
+// leaking database information as a system context can be essentially
+// "sudo".
+//
+// Anytime a function like "AsSystem" is used, it should be accompanied by a comment
+// explaining why it's ok and a nolint.
+func dbauthzAuthorizationContext(m dsl.Matcher) {
+	m.Import("context")
+	m.Import("github.com/coder/coder/v2/coderd/database/dbauthz")
+
+	m.Match(
+		`dbauthz.$f($c)`,
+	).
+		Where(
+			m["c"].Type.Implements("context.Context") &&
+				// Only report on functions that start with "As".
+				m["f"].Text.Matches("^As"),
+		).
+		// Instructions for fixing the lint error should be included on the dangerous function.
+		Report("Using '$f' is dangerous and should be accompanied by a comment explaining why it's ok and a nolint.")
+}
+
+// testingWithOwnerUser is a lint rule that detects potential permission bugs.
+// Calling clitest.SetupConfig with a client authenticated as the Owner user
+// can be a problem, since the CLI will be operating as that user and we may
+// miss permission bugs.
+//
+//nolint:unused,deadcode,varnamelen
+func testingWithOwnerUser(m dsl.Matcher) {
+	m.Import("testing")
+	m.Import("github.com/coder/coder/v2/cli/clitest")
+	m.Import("github.com/coder/coder/v2/enterprise/coderd/coderenttest")
+
+	// For both AGPL and enterprise code, we check for SetupConfig being called with a
+	// client authenticated as the Owner user.
+	m.Match(`
+		$_ := coderdtest.CreateFirstUser($t, $client)
+		$*_
+		clitest.$SetupConfig($t, $client, $_)
+	`).
+		Where(m["t"].Type.Implements("testing.TB") &&
+			m["SetupConfig"].Text.Matches("^SetupConfig$") &&
+			m.File().Name.Matches(`_test\.go$`)).
+		At(m["SetupConfig"]).
+		Report(`The CLI will be operating as the owner user, which has unrestricted permissions. Consider creating a different user.`)
+
+	m.Match(`
+		$client, $_ := coderdenttest.New($t, $*_)
+		$*_
+		clitest.$SetupConfig($t, $client, $_)
+	`).Where(m["t"].Type.Implements("testing.TB") &&
+		m["SetupConfig"].Text.Matches("^SetupConfig$") &&
+		m.File().Name.Matches(`_test\.go$`)).
+		At(m["SetupConfig"]).
+		Report(`The CLI will be operating as the owner user, which has unrestricted permissions. Consider creating a different user.`)
+
+	// For the enterprise code, we check for any method called on the client.
+	// While we want to be a bit stricter here, some methods are known to require
+	// the owner user, so we exclude them.
+	m.Match(`
+		$client, $_ := coderdenttest.New($t, $*_)
+		$*_
+		$_, $_ := $client.$Method($*_)
+	`).Where(m["t"].Type.Implements("testing.TB") &&
+		m.File().Name.Matches(`_test\.go$`) &&
+		!m["Method"].Text.Matches(`^(UpdateAppearance|Licenses|AddLicense|InsertLicense|DeleteLicense|CreateWorkspaceProxy|Replicas|Regions)$`)).
+		At(m["Method"]).
+		Report(`This client is operating as the owner user, which has unrestricted permissions. Consider creating a different user.`)
+
+	// Sadly, we need to match both one- and two-valued assignments separately.
+	m.Match(`
+		$client, $_ := coderdenttest.New($t, $*_)
+		$*_
+		$_ := $client.$Method($*_)
+	`).Where(m["t"].Type.Implements("testing.TB") &&
+		m.File().Name.Matches(`_test\.go$`) &&
+		!m["Method"].Text.Matches(`^(UpdateAppearance|Licenses|AddLicense|InsertLicense|DeleteLicense|CreateWorkspaceProxy|Replicas|Regions)$`)).
+		At(m["Method"]).
+		Report(`This client is operating as the owner user, which has unrestricted permissions. Consider creating a different user.`)
+}
+
 // Use xerrors everywhere! It provides additional stacktrace info!
 //
 //nolint:unused,deadcode,varnamelen
@@ -28,8 +110,12 @@ func xerrors(m dsl.Matcher) {
 	m.Import("fmt")
 	m.Import("golang.org/x/xerrors")
 
-	m.Match("fmt.Errorf($*args)").
-		Suggest("xerrors.New($args)").
+	m.Match("fmt.Errorf($arg)").
+		Suggest("xerrors.New($arg)").
+		Report("Use xerrors to provide additional stacktrace information!")
+
+	m.Match("fmt.Errorf($arg1, $*args)").
+		Suggest("xerrors.Errorf($arg1, $args)").
 		Report("Use xerrors to provide additional stacktrace information!")
 
 	m.Match("errors.$_($msg)").
@@ -42,10 +128,10 @@ func xerrors(m dsl.Matcher) {
 //
 //nolint:unused,deadcode,varnamelen
 func databaseImport(m dsl.Matcher) {
-	m.Import("github.com/coder/coder/coderd/database")
+	m.Import("github.com/coder/coder/v2/coderd/database")
 	m.Match("database.$_").
 		Report("Do not import any database types into codersdk").
-		Where(m.File().PkgPath.Matches("github.com/coder/coder/codersdk"))
+		Where(m.File().PkgPath.Matches("github.com/coder/coder/v2/codersdk"))
 }
 
 // doNotCallTFailNowInsideGoroutine enforces not calling t.FailNow or
@@ -95,7 +181,7 @@ func doNotCallTFailNowInsideGoroutine(m dsl.Matcher) {
 func useStandardTimeoutsAndDelaysInTests(m dsl.Matcher) {
 	m.Import("github.com/stretchr/testify/require")
 	m.Import("github.com/stretchr/testify/assert")
-	m.Import("github.com/coder/coder/testutil")
+	m.Import("github.com/coder/coder/v2/testutil")
 
 	m.Match(`context.WithTimeout($ctx, $duration)`).
 		Where(m.File().Imports("testing") && !m.File().PkgPath.Matches("testutil$") && !m["duration"].Text.Matches("^testutil\\.")).
@@ -176,7 +262,7 @@ func InTx(m dsl.Matcher) {
 // and ends with punctuation.
 // There are ways around the linter, but this should work in the common cases.
 func HttpAPIErrorMessage(m dsl.Matcher) {
-	m.Import("github.com/coder/coder/coderd/httpapi")
+	m.Import("github.com/coder/coder/v2/coderd/httpapi")
 
 	isNotProperError := func(v dsl.Var) bool {
 		return v.Type.Is("string") &&
@@ -209,7 +295,7 @@ func HttpAPIErrorMessage(m dsl.Matcher) {
 // HttpAPIReturn will report a linter violation if the http function is not
 // returned after writing a response to the client.
 func HttpAPIReturn(m dsl.Matcher) {
-	m.Import("github.com/coder/coder/coderd/httpapi")
+	m.Import("github.com/coder/coder/v2/coderd/httpapi")
 
 	// Manually enumerate the httpapi function rather then a 'Where' condition
 	// as this is a bit more efficient.
@@ -265,4 +351,175 @@ func notImplementsFullResponseWriter(ctx *dsl.VarFilterContext) bool {
 	return !(types.Implements(p, writer) || types.Implements(ctx.Type, writer)) ||
 		!(types.Implements(p, flusher) || types.Implements(ctx.Type, flusher)) ||
 		!(types.Implements(p, hijacker) || types.Implements(ctx.Type, hijacker))
+}
+
+// slogFieldNameSnakeCase is a lint rule that ensures naming consistency
+// of logged field names.
+func slogFieldNameSnakeCase(m dsl.Matcher) {
+	m.Import("cdr.dev/slog")
+	m.Match(
+		`slog.F($name, $value)`,
+	).
+		Where(m["name"].Const && !m["name"].Text.Matches(`^"[a-z]+(_[a-z]+)*"$`)).
+		Report("Field name $name must be snake_case.")
+}
+
+// slogUUIDFieldNameHasIDSuffix ensures that "uuid.UUID" field has ID prefix
+// in the field name.
+func slogUUIDFieldNameHasIDSuffix(m dsl.Matcher) {
+	m.Import("cdr.dev/slog")
+	m.Import("github.com/google/uuid")
+	m.Match(
+		`slog.F($name, $value)`,
+	).
+		Where(m["value"].Type.Is("uuid.UUID") && !m["name"].Text.Matches(`_id"$`)).
+		Report(`uuid.UUID field $name must have "_id" suffix.`)
+}
+
+// slogMessageFormat ensures that the log message starts with lowercase, and does not
+// end with special character.
+func slogMessageFormat(m dsl.Matcher) {
+	m.Import("cdr.dev/slog")
+	m.Match(
+		`logger.Error($ctx, $message, $*args)`,
+		`logger.Warn($ctx, $message, $*args)`,
+		`logger.Info($ctx, $message, $*args)`,
+		`logger.Debug($ctx, $message, $*args)`,
+
+		`$foo.logger.Error($ctx, $message, $*args)`,
+		`$foo.logger.Warn($ctx, $message, $*args)`,
+		`$foo.logger.Info($ctx, $message, $*args)`,
+		`$foo.logger.Debug($ctx, $message, $*args)`,
+
+		`Logger.Error($ctx, $message, $*args)`,
+		`Logger.Warn($ctx, $message, $*args)`,
+		`Logger.Info($ctx, $message, $*args)`,
+		`Logger.Debug($ctx, $message, $*args)`,
+
+		`$foo.Logger.Error($ctx, $message, $*args)`,
+		`$foo.Logger.Warn($ctx, $message, $*args)`,
+		`$foo.Logger.Info($ctx, $message, $*args)`,
+		`$foo.Logger.Debug($ctx, $message, $*args)`,
+	).
+		Where(
+			(
+			// It doesn't end with a special character:
+			m["message"].Text.Matches(`[.!?]"$`) ||
+				// it starts with lowercase:
+				m["message"].Text.Matches(`^"[A-Z]{1}`) &&
+					// but there are exceptions:
+					!m["message"].Text.Matches(`^"Prometheus`) &&
+					!m["message"].Text.Matches(`^"X11`) &&
+					!m["message"].Text.Matches(`^"CSP`) &&
+					!m["message"].Text.Matches(`^"OIDC`))).
+		Report(`Message $message must start with lowercase, and does not end with a special characters.`)
+}
+
+// slogMessageLength ensures that important log messages are meaningful, and must be at least 16 characters long.
+func slogMessageLength(m dsl.Matcher) {
+	m.Import("cdr.dev/slog")
+	m.Match(
+		`logger.Error($ctx, $message, $*args)`,
+		`logger.Warn($ctx, $message, $*args)`,
+		`logger.Info($ctx, $message, $*args)`,
+
+		`$foo.logger.Error($ctx, $message, $*args)`,
+		`$foo.logger.Warn($ctx, $message, $*args)`,
+		`$foo.logger.Info($ctx, $message, $*args)`,
+
+		`Logger.Error($ctx, $message, $*args)`,
+		`Logger.Warn($ctx, $message, $*args)`,
+		`Logger.Info($ctx, $message, $*args)`,
+
+		`$foo.Logger.Error($ctx, $message, $*args)`,
+		`$foo.Logger.Warn($ctx, $message, $*args)`,
+		`$foo.Logger.Info($ctx, $message, $*args)`,
+
+		// no debug
+	).
+		Where(
+			// It has at least 16 characters (+ ""):
+			m["message"].Text.Matches(`^".{0,15}"$`) &&
+				// but there are exceptions:
+				!m["message"].Text.Matches(`^"command exit"$`)).
+		Report(`Message $message is too short, it must be at least 16 characters long.`)
+}
+
+// slogErr ensures that errors are logged with "slog.Error" instead of "slog.F"
+func slogError(m dsl.Matcher) {
+	m.Import("cdr.dev/slog")
+	m.Match(
+		`slog.F($name, $value)`,
+	).
+		Where(m["name"].Const && m["value"].Type.Is("error") && !m["name"].Text.Matches(`^"internal_error"$`)).
+		Report(`Error should be logged using "slog.Error" instead.`)
+}
+
+// withTimezoneUTC ensures that we don't just sprinkle dbtestutil.WithTimezone("UTC") about
+// to work around real timezone bugs in our code.
+//
+//nolint:unused,deadcode,varnamelen
+func withTimezoneUTC(m dsl.Matcher) {
+	m.Match(
+		`dbtestutil.WithTimezone($tz)`,
+	).Where(
+		m["tz"].Text.Matches(`[uU][tT][cC]"$`),
+	).Report(`Setting database timezone to UTC may mask timezone-related bugs.`).
+		At(m["tz"])
+}
+
+// workspaceActivity ensures that updating workspace activity is only done in the workspacestats package.
+//
+//nolint:unused,deadcode,varnamelen
+func workspaceActivity(m dsl.Matcher) {
+	m.Import("github.com/coder/coder/v2/coderd/database")
+	m.Match(
+		`$_.ActivityBumpWorkspace($_, $_)`,
+		`$_.UpdateWorkspaceLastUsedAt($_, $_)`,
+		`$_.BatchUpdateWorkspaceLastUsedAt($_, $_)`,
+		`$_.UpdateTemplateWorkspacesLastUsedAt($_, $_)`,
+		`$_.InsertWorkspaceAgentStats($_, $_)`,
+		`$_.InsertWorkspaceAppStats($_, $_)`,
+	).Where(
+		!m.File().PkgPath.Matches(`workspacestats`) &&
+			!m.File().PkgPath.Matches(`dbauthz$`) &&
+			!m.File().PkgPath.Matches(`dbgen$`) &&
+			!m.File().Name.Matches(`_test\.go$`),
+	).Report("Updating workspace activity should always be done in the workspacestats package.")
+}
+
+// noExecInAgent ensures that packages under agent/ don't use exec.Command or
+// exec.CommandContext directly.
+//
+//nolint:unused,deadcode,varnamelen
+func noExecInAgent(m dsl.Matcher) {
+	m.Import("os/exec")
+	m.Match(
+		`exec.Command($*_)`,
+		`exec.CommandContext($*_)`,
+	).
+		Where(
+			m.File().PkgPath.Matches("/agent/") &&
+				!m.File().PkgPath.Matches("/agentexec") &&
+				!m.File().Name.Matches(`_test\.go$`),
+		).
+		Report("The agent and its subpackages should not use exec.Command or exec.CommandContext directly. Consider using an agentexec.Execer instead.")
+}
+
+// noPTYInAgent ensures that packages under agent/ don't use pty.Command or
+// pty.CommandContext directly.
+//
+//nolint:unused,deadcode,varnamelen
+func noPTYInAgent(m dsl.Matcher) {
+	m.Import("github.com/coder/coder/v2/pty")
+	m.Match(
+		`pty.Command($*_)`,
+		`pty.CommandContext($*_)`,
+	).
+		Where(
+			m.File().PkgPath.Matches(`/agent/`) &&
+				!m.File().PkgPath.Matches(`/agentexec`) &&
+				!m.File().Name.Matches(`_test\.go$`),
+		).
+		Report("The agent and its subpackages should not use pty.Command or pty.CommandContext directly. Consider using an agentexec.Execer instead.")
 }

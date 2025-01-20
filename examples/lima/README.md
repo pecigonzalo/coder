@@ -17,11 +17,12 @@ This lets you quickly test out Coder in a self-contained environment.
 - You can use the configuration as-is, or edit it to your liking.
 
 This will:
+
 - Start an Ubuntu 22.04 VM
 - Install Docker and Terraform from the official repos
-- Install Coder using the [installation script](https://coder.com/docs/coder-oss/latest/install#installsh)
+- Install Coder using the [installation script](../../docs/install/install.sh.md)
 - Generates an initial user account `admin@coder.com` with a randomly generated password (stored in the VM under `/home/${USER}.linux/.config/coderv2/password`)
-- Initializes a [sample Docker template](https://github.com/coder/coder/tree/main/examples/templates/docker-code-server) for creating workspaces
+- Initializes a [sample Docker template](https://github.com/coder/coder/tree/main/examples/templates/docker) for creating workspaces
 
 Once this completes, you can visit `http://localhost:3000` and start creating workspaces!
 

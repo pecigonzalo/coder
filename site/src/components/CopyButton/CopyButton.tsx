@@ -1,110 +1,77 @@
-import IconButton from "@material-ui/core/Button"
-import { makeStyles } from "@material-ui/core/styles"
-import Tooltip from "@material-ui/core/Tooltip"
-import Check from "@material-ui/icons/Check"
-import React, { useState } from "react"
-import { combineClasses } from "../../util/combineClasses"
-import { FileCopyIcon } from "../Icons/FileCopyIcon"
+import { type Interpolation, type Theme, css } from "@emotion/react";
+import Check from "@mui/icons-material/Check";
+import IconButton from "@mui/material/Button";
+import Tooltip from "@mui/material/Tooltip";
+import { useClipboard } from "hooks/useClipboard";
+import { type ReactNode, forwardRef } from "react";
+import { FileCopyIcon } from "../Icons/FileCopyIcon";
 
 interface CopyButtonProps {
-  text: string
-  ctaCopy?: string
-  wrapperClassName?: string
-  buttonClassName?: string
-  tooltipTitle?: string
+	children?: ReactNode;
+	text: string;
+	ctaCopy?: string;
+	wrapperStyles?: Interpolation<Theme>;
+	buttonStyles?: Interpolation<Theme>;
+	tooltipTitle?: string;
 }
 
 export const Language = {
-  tooltipTitle: "Copy to clipboard",
-  ariaLabel: "Copy to clipboard",
-}
+	tooltipTitle: "Copy to clipboard",
+	ariaLabel: "Copy to clipboard",
+};
 
 /**
  * Copy button used inside the CodeBlock component internally
  */
-export const CopyButton: React.FC<React.PropsWithChildren<CopyButtonProps>> = ({
-  text,
-  ctaCopy,
-  wrapperClassName = "",
-  buttonClassName = "",
-  tooltipTitle = Language.tooltipTitle,
-}) => {
-  const styles = useStyles()
-  const [isCopied, setIsCopied] = useState<boolean>(false)
+export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(
+	(props, ref) => {
+		const {
+			text,
+			ctaCopy,
+			wrapperStyles,
+			buttonStyles,
+			tooltipTitle = Language.tooltipTitle,
+		} = props;
+		const { showCopiedSuccess, copyToClipboard } = useClipboard({
+			textToCopy: text,
+		});
 
-  const copyToClipboard = async (): Promise<void> => {
-    try {
-      await window.navigator.clipboard.writeText(text)
-      setIsCopied(true)
-      window.setTimeout(() => {
-        setIsCopied(false)
-      }, 1000)
-    } catch (err) {
-      const input = document.createElement("input")
-      input.value = text
-      document.body.appendChild(input)
-      input.focus()
-      input.select()
-      const result = document.execCommand("copy")
-      document.body.removeChild(input)
-      if (result) {
-        setIsCopied(true)
-        window.setTimeout(() => {
-          setIsCopied(false)
-        }, 1000)
-      } else {
-        const wrappedErr = new Error(
-          "copyToClipboard: failed to copy text to clipboard",
-        )
-        if (err instanceof Error) {
-          wrappedErr.stack = err.stack
-        }
-        console.error(wrappedErr)
-      }
+		return (
+			<Tooltip title={tooltipTitle} placement="top">
+				<div css={[{ display: "flex" }, wrapperStyles]}>
+					<IconButton
+						ref={ref}
+						css={[styles.button, buttonStyles]}
+						size="small"
+						aria-label={Language.ariaLabel}
+						variant="text"
+						onClick={copyToClipboard}
+					>
+						{showCopiedSuccess ? (
+							<Check css={styles.copyIcon} />
+						) : (
+							<FileCopyIcon css={styles.copyIcon} />
+						)}
+						{ctaCopy && <div css={{ marginLeft: 8 }}>{ctaCopy}</div>}
+					</IconButton>
+				</div>
+			</Tooltip>
+		);
+	},
+);
+
+const styles = {
+	button: (theme) => css`
+    border-radius: 8px;
+    padding: 8px;
+    min-width: 32px;
+
+    &:hover {
+      background: ${theme.palette.background.paper};
     }
-  }
-
-  return (
-    <Tooltip title={tooltipTitle} placement="top">
-      <div
-        className={combineClasses([styles.copyButtonWrapper, wrapperClassName])}
-      >
-        <IconButton
-          className={combineClasses([styles.copyButton, buttonClassName])}
-          onClick={copyToClipboard}
-          size="small"
-          aria-label={Language.ariaLabel}
-        >
-          {isCopied ? (
-            <Check className={styles.fileCopyIcon} />
-          ) : (
-            <FileCopyIcon className={styles.fileCopyIcon} />
-          )}
-          {ctaCopy && <div className={styles.buttonCopy}>{ctaCopy}</div>}
-        </IconButton>
-      </div>
-    </Tooltip>
-  )
-}
-
-const useStyles = makeStyles((theme) => ({
-  copyButtonWrapper: {
-    display: "flex",
-  },
-  copyButton: {
-    borderRadius: theme.shape.borderRadius,
-    padding: theme.spacing(0.85),
-    minWidth: 32,
-
-    "&:hover": {
-      background: theme.palette.background.paper,
-    },
-  },
-  fileCopyIcon: {
-    width: 20,
-    height: 20,
-  },
-  buttonCopy: {
-    marginLeft: theme.spacing(1),
-  },
-}))
+  `,
+	copyIcon: css`
+    width: 20px;
+    height: 20px;
+  `,
+} satisfies Record<string, Interpolation<Theme>>;

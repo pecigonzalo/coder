@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 func TestPagination(t *testing.T) {
@@ -47,8 +47,28 @@ func TestPagination(t *testing.T) {
 			ExpectedError: invalidValues,
 		},
 		{
+			Name:          "TooHighLimit",
+			Limit:         "2147483648",
+			ExpectedError: invalidValues,
+		},
+		{
+			Name:          "NegativeLimit",
+			Limit:         "-1",
+			ExpectedError: invalidValues,
+		},
+		{
 			Name:          "BadOffset",
 			Offset:        "bogus",
+			ExpectedError: invalidValues,
+		},
+		{
+			Name:          "TooHighOffset",
+			Offset:        "2147483648",
+			ExpectedError: invalidValues,
+		},
+		{
+			Name:          "NegativeOffset",
+			Offset:        "-1",
 			ExpectedError: invalidValues,
 		},
 

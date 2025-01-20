@@ -3,7 +3,9 @@ package site_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"net/http"
@@ -16,12 +18,112 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/site"
-	"github.com/coder/coder/testutil"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/db2sdk"
+	"github.com/coder/coder/v2/coderd/database/dbgen"
+	"github.com/coder/coder/v2/coderd/database/dbmem"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/coderd/httpmw"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/site"
+	"github.com/coder/coder/v2/testutil"
 )
+
+func TestInjection(t *testing.T) {
+	t.Parallel()
+
+	siteFS := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte("{{ .User }}"),
+		},
+	}
+	binFs := http.FS(fstest.MapFS{})
+	db := dbmem.New()
+	handler := site.New(&site.Options{
+		BinFS:    binFs,
+		Database: db,
+		SiteFS:   siteFS,
+	})
+
+	user := dbgen.User(t, db, database.User{})
+	_, token := dbgen.APIKey(t, db, database.APIKey{
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set(codersdk.SessionTokenHeader, token)
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, r)
+	require.Equal(t, http.StatusOK, rw.Code)
+	var got codersdk.User
+	err := json.Unmarshal([]byte(html.UnescapeString(rw.Body.String())), &got)
+	require.NoError(t, err)
+
+	// This will update as part of the request!
+	got.LastSeenAt = user.LastSeenAt
+
+	require.Equal(t, db2sdk.User(user, []uuid.UUID{}), got)
+}
+
+func TestInjectionFailureProducesCleanHTML(t *testing.T) {
+	t.Parallel()
+
+	db := dbmem.New()
+
+	// Create an expired user with a refresh token, but provide no OAuth2
+	// configuration so that refresh is impossible, this should result in
+	// an error when httpmw.ExtractAPIKey is called.
+	user := dbgen.User(t, db, database.User{})
+	_, token := dbgen.APIKey(t, db, database.APIKey{
+		UserID:    user.ID,
+		LastUsed:  dbtime.Now().Add(-time.Hour),
+		ExpiresAt: dbtime.Now().Add(-time.Second),
+		LoginType: database.LoginTypeGithub,
+	})
+	_ = dbgen.UserLink(t, db, database.UserLink{
+		UserID:            user.ID,
+		LoginType:         database.LoginTypeGithub,
+		OAuthRefreshToken: "hello",
+		OAuthExpiry:       dbtime.Now().Add(-time.Second),
+	})
+
+	binFs := http.FS(fstest.MapFS{})
+	siteFS := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte("<html>{{ .User }}</html>"),
+		},
+	}
+	handler := site.New(&site.Options{
+		BinFS:    binFs,
+		Database: db,
+		SiteFS:   siteFS,
+
+		// No OAuth2 configs, refresh will fail.
+		OAuth2Configs: &httpmw.OAuth2Configs{
+			Github: nil,
+			OIDC:   nil,
+		},
+	})
+
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set(codersdk.SessionTokenHeader, token)
+	rw := httptest.NewRecorder()
+
+	handler.ServeHTTP(rw, r)
+
+	// Ensure we get a clean HTML response with no user data or errors
+	// from httpmw.ExtractAPIKey.
+	assert.Equal(t, http.StatusOK, rw.Code)
+	body := rw.Body.String()
+	assert.Equal(t, "<html></html>", body)
+}
 
 func TestCaching(t *testing.T) {
 	t.Parallel()
@@ -45,7 +147,10 @@ func TestCaching(t *testing.T) {
 	}
 	binFS := http.FS(fstest.MapFS{})
 
-	srv := httptest.NewServer(site.Handler(rootFS, binFS))
+	srv := httptest.NewServer(site.New(&site.Options{
+		BinFS:  binFS,
+		SiteFS: rootFS,
+	}))
 	defer srv.Close()
 
 	// Create a context
@@ -102,10 +207,16 @@ func TestServingFiles(t *testing.T) {
 		"dashboard.css": &fstest.MapFile{
 			Data: []byte("dashboard-css-bytes"),
 		},
+		"install.sh": &fstest.MapFile{
+			Data: []byte("install-sh-bytes"),
+		},
 	}
 	binFS := http.FS(fstest.MapFS{})
 
-	srv := httptest.NewServer(site.Handler(rootFS, binFS))
+	srv := httptest.NewServer(site.New(&site.Options{
+		BinFS:  binFS,
+		SiteFS: rootFS,
+	}))
 	defer srv.Close()
 
 	// Create a context
@@ -140,6 +251,9 @@ func TestServingFiles(t *testing.T) {
 		// JS, CSS cases
 		{"/dashboard.js", "dashboard-js-bytes"},
 		{"/dashboard.css", "dashboard-css-bytes"},
+
+		// Install script
+		{"/install.sh", "install-sh-bytes"},
 	}
 
 	for _, testCase := range testCases {
@@ -185,10 +299,18 @@ const (
 	binCoderTarZstd = "bin/coder.tar.zst"
 )
 
+var sampleBinSHAs = map[string]string{
+	"coder-linux-amd64": "55641d5d56bbb8ccf5850fe923bd971b86364604",
+}
+
 func sampleBinFS() fstest.MapFS {
+	sha1File := bytes.NewBuffer(nil)
+	for name, sha := range sampleBinSHAs {
+		_, _ = fmt.Fprintf(sha1File, "%s *%s\n", sha, name)
+	}
 	return fstest.MapFS{
 		binCoderSha1: &fstest.MapFile{
-			Data: []byte("55641d5d56bbb8ccf5850fe923bd971b86364604 *coder-linux-amd64\n"),
+			Data: sha1File.Bytes(),
 		},
 		binCoderTarZstd: &fstest.MapFile{
 			// echo -n compressed >coder-linux-amd64
@@ -241,9 +363,11 @@ func TestServingBin(t *testing.T) {
 	delete(sampleBinFSMissingSha256, binCoderSha1)
 
 	type req struct {
-		url        string
-		wantStatus int
-		wantBody   []byte
+		url         string
+		ifNoneMatch string
+		wantStatus  int
+		wantBody    []byte
+		wantEtag    string
 	}
 	tests := []struct {
 		name    string
@@ -255,7 +379,19 @@ func TestServingBin(t *testing.T) {
 			name: "Extract and serve bin",
 			fs:   sampleBinFS(),
 			reqs: []req{
-				{url: "/bin/coder-linux-amd64", wantStatus: http.StatusOK, wantBody: []byte("compressed")},
+				{
+					url:        "/bin/coder-linux-amd64",
+					wantStatus: http.StatusOK,
+					wantBody:   []byte("compressed"),
+					wantEtag:   fmt.Sprintf("%q", sampleBinSHAs["coder-linux-amd64"]),
+				},
+				// Test ETag support.
+				{
+					url:         "/bin/coder-linux-amd64",
+					ifNoneMatch: fmt.Sprintf("%q", sampleBinSHAs["coder-linux-amd64"]),
+					wantStatus:  http.StatusNotModified,
+					wantEtag:    fmt.Sprintf("%q", sampleBinSHAs["coder-linux-amd64"]),
+				},
 				{url: "/bin/GITKEEP", wantStatus: http.StatusNotFound},
 			},
 		},
@@ -315,7 +451,9 @@ func TestServingBin(t *testing.T) {
 				},
 			},
 			reqs: []req{
+				// We support both hyphens and underscores for compatibility.
 				{url: "/bin/coder-linux-amd64", wantStatus: http.StatusOK, wantBody: []byte("embed")},
+				{url: "/bin/coder_linux_amd64", wantStatus: http.StatusOK, wantBody: []byte("embed")},
 				{url: "/bin/GITKEEP", wantStatus: http.StatusOK, wantBody: []byte("")},
 			},
 		},
@@ -327,14 +465,18 @@ func TestServingBin(t *testing.T) {
 			t.Parallel()
 
 			dest := t.TempDir()
-			binFS, err := site.ExtractOrReadBinFS(dest, tt.fs)
+			binFS, binHashes, err := site.ExtractOrReadBinFS(dest, tt.fs)
 			if !tt.wantErr && err != nil {
 				require.NoError(t, err, "extract or read failed")
 			} else if tt.wantErr {
 				require.Error(t, err, "extraction or read did not fail")
 			}
 
-			srv := httptest.NewServer(site.Handler(rootFS, binFS))
+			srv := httptest.NewServer(site.New(&site.Options{
+				BinFS:     binFS,
+				BinHashes: binHashes,
+				SiteFS:    rootFS,
+			}))
 			defer srv.Close()
 
 			// Create a context
@@ -345,6 +487,10 @@ func TestServingBin(t *testing.T) {
 				t.Run(strings.TrimPrefix(tr.url, "/"), func(t *testing.T) {
 					req, err := http.NewRequestWithContext(ctx, "GET", srv.URL+tr.url, nil)
 					require.NoError(t, err, "http request failed")
+
+					if tr.ifNoneMatch != "" {
+						req.Header.Set("If-None-Match", tr.ifNoneMatch)
+					}
 
 					resp, err := http.DefaultClient.Do(req)
 					require.NoError(t, err, "http do failed")
@@ -359,6 +505,14 @@ func TestServingBin(t *testing.T) {
 					if tr.wantBody != nil {
 						assert.Equal(t, string(tr.wantBody), string(gotBody), "body did not match")
 					}
+					if tr.wantStatus == http.StatusNoContent || tr.wantStatus == http.StatusNotModified {
+						assert.Empty(t, gotBody, "body is not empty")
+					}
+
+					if tr.wantEtag != "" {
+						assert.NotEmpty(t, resp.Header.Get("ETag"), "etag header is empty")
+						assert.Equal(t, tr.wantEtag, resp.Header.Get("ETag"), "etag did not match")
+					}
 				})
 			}
 		})
@@ -372,7 +526,7 @@ func TestExtractOrReadBinFS(t *testing.T) {
 
 		siteFS := sampleBinFS()
 		dest := t.TempDir()
-		_, err := site.ExtractOrReadBinFS(dest, siteFS)
+		_, _, err := site.ExtractOrReadBinFS(dest, siteFS)
 		require.NoError(t, err)
 
 		checkModtime := func() map[string]time.Time {
@@ -400,7 +554,7 @@ func TestExtractOrReadBinFS(t *testing.T) {
 
 		firstModtimes := checkModtime()
 
-		_, err = site.ExtractOrReadBinFS(dest, siteFS)
+		_, _, err = site.ExtractOrReadBinFS(dest, siteFS)
 		require.NoError(t, err)
 
 		secondModtimes := checkModtime()
@@ -412,7 +566,7 @@ func TestExtractOrReadBinFS(t *testing.T) {
 
 		siteFS := sampleBinFS()
 		dest := t.TempDir()
-		_, err := site.ExtractOrReadBinFS(dest, siteFS)
+		_, _, err := site.ExtractOrReadBinFS(dest, siteFS)
 		require.NoError(t, err)
 
 		bin := filepath.Join(dest, "bin", "coder-linux-amd64")
@@ -426,7 +580,7 @@ func TestExtractOrReadBinFS(t *testing.T) {
 		err = f.Close()
 		require.NoError(t, err)
 
-		_, err = site.ExtractOrReadBinFS(dest, siteFS)
+		_, _, err = site.ExtractOrReadBinFS(dest, siteFS)
 		require.NoError(t, err)
 
 		f, err = os.Open(bin)
@@ -438,6 +592,17 @@ func TestExtractOrReadBinFS(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.NotEqual(t, dontWant, got, "file should be overwritten on hash mismatch")
+	})
+
+	t.Run("ParsesHashes", func(t *testing.T) {
+		t.Parallel()
+
+		siteFS := sampleBinFS()
+		dest := t.TempDir()
+		_, hashes, err := site.ExtractOrReadBinFS(dest, siteFS)
+		require.NoError(t, err)
+
+		require.Equal(t, sampleBinSHAs, hashes, "hashes did not match")
 	})
 }
 
@@ -469,4 +634,61 @@ func TestRenderStaticErrorPage(t *testing.T) {
 	require.Contains(t, bodyStr, d.Description)
 	require.Contains(t, bodyStr, "Retry")
 	require.Contains(t, bodyStr, d.DashboardURL)
+}
+
+func TestRenderStaticErrorPageNoStatus(t *testing.T) {
+	t.Parallel()
+
+	d := site.ErrorPageData{
+		HideStatus:   true,
+		Status:       http.StatusBadGateway,
+		Title:        "Bad Gateway 1234",
+		Description:  "shout out colin",
+		RetryEnabled: true,
+		DashboardURL: "https://example.com",
+	}
+
+	rw := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/", nil)
+	site.RenderStaticErrorPage(rw, r, d)
+
+	resp := rw.Result()
+	defer resp.Body.Close()
+	require.Equal(t, d.Status, resp.StatusCode)
+	require.Contains(t, resp.Header.Get("Content-Type"), "text/html")
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	bodyStr := string(body)
+	require.NotContains(t, bodyStr, strconv.Itoa(d.Status))
+	require.Contains(t, bodyStr, d.Title)
+	require.Contains(t, bodyStr, d.Description)
+	require.Contains(t, bodyStr, "Retry")
+	require.Contains(t, bodyStr, d.DashboardURL)
+}
+
+func TestJustFilesSystem(t *testing.T) {
+	t.Parallel()
+
+	tfs := fstest.MapFS{
+		"dir/foo.txt": &fstest.MapFile{
+			Data: []byte("hello world"),
+		},
+		"dir/bar.txt": &fstest.MapFile{
+			Data: []byte("hello world"),
+		},
+	}
+
+	mux := chi.NewRouter()
+	mux.Mount("/onlyfiles/", http.StripPrefix("/onlyfiles", http.FileServer(http.FS(site.OnlyFiles(tfs)))))
+	mux.Mount("/all/", http.StripPrefix("/all", http.FileServer(http.FS(tfs))))
+
+	// The /all/ endpoint should serve the directory listing.
+	resp := httptest.NewRecorder()
+	mux.ServeHTTP(resp, httptest.NewRequest("GET", "/all/dir/", nil))
+	require.Equal(t, http.StatusOK, resp.Code, "all serves the directory")
+
+	resp = httptest.NewRecorder()
+	mux.ServeHTTP(resp, httptest.NewRequest("GET", "/onlyfiles/dir/", nil))
+	require.Equal(t, http.StatusNotFound, resp.Code, "onlyfiles does not serve the directory")
 }

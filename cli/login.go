@@ -14,12 +14,14 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/pkg/browser"
-	"github.com/spf13/cobra"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/cli/cliflag"
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/pretty"
+
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/coderd/userpassword"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/serpent"
 )
 
 const (
@@ -37,18 +39,145 @@ func init() {
 	browser.Stdout = io.Discard
 }
 
-func login() *cobra.Command {
-	var (
-		email    string
-		username string
-		password string
+func promptFirstUsername(inv *serpent.Invocation) (string, error) {
+	currentUser, err := user.Current()
+	if err != nil {
+		return "", xerrors.Errorf("get current user: %w", err)
+	}
+	username, err := cliui.Prompt(inv, cliui.PromptOptions{
+		Text:    "What " + pretty.Sprint(cliui.DefaultStyles.Field, "username") + " would you like?",
+		Default: currentUser.Username,
+	})
+	if errors.Is(err, cliui.Canceled) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+
+	return username, nil
+}
+
+func promptFirstName(inv *serpent.Invocation) (string, error) {
+	name, err := cliui.Prompt(inv, cliui.PromptOptions{
+		Text:    "(Optional) What " + pretty.Sprint(cliui.DefaultStyles.Field, "name") + " would you like?",
+		Default: "",
+	})
+	if err != nil {
+		if errors.Is(err, cliui.Canceled) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	return name, nil
+}
+
+func promptFirstPassword(inv *serpent.Invocation) (string, error) {
+retry:
+	password, err := cliui.Prompt(inv, cliui.PromptOptions{
+		Text:   "Enter a " + pretty.Sprint(cliui.DefaultStyles.Field, "password") + ":",
+		Secret: true,
+		Validate: func(s string) error {
+			return userpassword.Validate(s)
+		},
+	})
+	if err != nil {
+		return "", xerrors.Errorf("specify password prompt: %w", err)
+	}
+	confirm, err := cliui.Prompt(inv, cliui.PromptOptions{
+		Text:     "Confirm " + pretty.Sprint(cliui.DefaultStyles.Field, "password") + ":",
+		Secret:   true,
+		Validate: cliui.ValidateNotEmpty,
+	})
+	if err != nil {
+		return "", xerrors.Errorf("confirm password prompt: %w", err)
+	}
+
+	if confirm != password {
+		_, _ = fmt.Fprintln(inv.Stdout, pretty.Sprint(cliui.DefaultStyles.Error, "Passwords do not match"))
+		goto retry
+	}
+
+	return password, nil
+}
+
+func (r *RootCmd) loginWithPassword(
+	inv *serpent.Invocation,
+	client *codersdk.Client,
+	email, password string,
+) error {
+	resp, err := client.LoginWithPassword(inv.Context(), codersdk.LoginWithPasswordRequest{
+		Email:    email,
+		Password: password,
+	})
+	if err != nil {
+		return xerrors.Errorf("login with password: %w", err)
+	}
+
+	sessionToken := resp.SessionToken
+	config := r.createConfig()
+	err = config.Session().Write(sessionToken)
+	if err != nil {
+		return xerrors.Errorf("write session token: %w", err)
+	}
+
+	client.SetSessionToken(sessionToken)
+
+	// Nice side-effect: validates the token.
+	u, err := client.User(inv.Context(), "me")
+	if err != nil {
+		return xerrors.Errorf("get user: %w", err)
+	}
+
+	_, _ = fmt.Fprintf(
+		inv.Stdout,
+		"Welcome to Coder, %s! You're authenticated.",
+		pretty.Sprint(cliui.DefaultStyles.Keyword, u.Username),
 	)
-	cmd := &cobra.Command{
-		Use:   "login <url>",
-		Short: "Authenticate with Coder deployment",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			rawURL := args[0]
+
+	return nil
+}
+
+func (r *RootCmd) login() *serpent.Command {
+	const firstUserTrialEnv = "CODER_FIRST_USER_TRIAL"
+
+	var (
+		email              string
+		username           string
+		name               string
+		password           string
+		trial              bool
+		useTokenForSession bool
+	)
+	cmd := &serpent.Command{
+		Use:        "login [<url>]",
+		Short:      "Authenticate with Coder deployment",
+		Middleware: serpent.RequireRangeArgs(0, 1),
+		Handler: func(inv *serpent.Invocation) error {
+			ctx := inv.Context()
+			rawURL := ""
+			var urlSource string
+
+			if len(inv.Args) == 0 {
+				rawURL = r.clientURL.String()
+				urlSource = "flag"
+				if rawURL != "" && rawURL == inv.Environ.Get(envURL) {
+					urlSource = "environment"
+				}
+			} else {
+				rawURL = inv.Args[0]
+				urlSource = "argument"
+			}
+
+			if url, err := r.createConfig().URL().Read(); rawURL == "" && err == nil {
+				urlSource = "config"
+				rawURL = url
+			}
+
+			if rawURL == "" {
+				return xerrors.Errorf("no url argument provided")
+			}
 
 			if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
 				scheme := "https"
@@ -66,62 +195,49 @@ func login() *cobra.Command {
 				serverURL.Scheme = "https"
 			}
 
-			client, err := createUnauthenticatedClient(cmd, serverURL)
+			client, err := r.createUnauthenticatedClient(ctx, serverURL, inv)
 			if err != nil {
 				return err
 			}
 
-			// Try to check the version of the server prior to logging in.
-			// It may be useful to warn the user if they are trying to login
-			// on a very old client.
-			err = checkVersions(cmd, client)
-			if err != nil {
-				// Checking versions isn't a fatal error so we print a warning
-				// and proceed.
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), cliui.Styles.Warn.Render(err.Error()))
-			}
-
-			hasInitialUser, err := client.HasFirstUser(cmd.Context())
+			hasFirstUser, err := client.HasFirstUser(ctx)
 			if err != nil {
 				return xerrors.Errorf("Failed to check server %q for first user, is the URL correct and is coder accessible from your browser? Error - has initial user: %w", serverURL.String(), err)
 			}
-			if !hasInitialUser {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), caret+"Your Coder deployment hasn't been set up!\n")
+
+			_, _ = fmt.Fprintf(inv.Stdout, "Attempting to authenticate with %s URL: '%s'\n", urlSource, serverURL)
+
+			// nolint: nestif
+			if !hasFirstUser {
+				_, _ = fmt.Fprintf(inv.Stdout, Caret+"Your Coder deployment hasn't been set up!\n")
 
 				if username == "" {
-					if !isTTY(cmd) {
+					if !isTTYIn(inv) {
 						return xerrors.New("the initial user cannot be created in non-interactive mode. use the API")
 					}
-					_, err := cliui.Prompt(cmd, cliui.PromptOptions{
+
+					_, err := cliui.Prompt(inv, cliui.PromptOptions{
 						Text:      "Would you like to create the first user?",
 						Default:   cliui.ConfirmYes,
 						IsConfirm: true,
 					})
-					if errors.Is(err, cliui.Canceled) {
-						return nil
-					}
 					if err != nil {
 						return err
 					}
-					currentUser, err := user.Current()
+
+					username, err = promptFirstUsername(inv)
 					if err != nil {
-						return xerrors.Errorf("get current user: %w", err)
+						return err
 					}
-					username, err = cliui.Prompt(cmd, cliui.PromptOptions{
-						Text:    "What " + cliui.Styles.Field.Render("username") + " would you like?",
-						Default: currentUser.Username,
-					})
-					if errors.Is(err, cliui.Canceled) {
-						return nil
-					}
+					name, err = promptFirstName(inv)
 					if err != nil {
-						return xerrors.Errorf("pick username prompt: %w", err)
+						return err
 					}
 				}
 
 				if email == "" {
-					email, err = cliui.Prompt(cmd, cliui.PromptOptions{
-						Text: "What's your " + cliui.Styles.Field.Render("email") + "?",
+					email, err = cliui.Prompt(inv, cliui.PromptOptions{
+						Text: "What's your " + pretty.Sprint(cliui.DefaultStyles.Field, "email") + "?",
 						Validate: func(s string) error {
 							err := validator.New().Var(s, "email")
 							if err != nil {
@@ -131,91 +247,120 @@ func login() *cobra.Command {
 						},
 					})
 					if err != nil {
-						return xerrors.Errorf("specify email prompt: %w", err)
+						return err
 					}
 				}
 
 				if password == "" {
-					var matching bool
+					password, err = promptFirstPassword(inv)
+					if err != nil {
+						return err
+					}
+				}
 
-					for !matching {
-						password, err = cliui.Prompt(cmd, cliui.PromptOptions{
-							Text:     "Enter a " + cliui.Styles.Field.Render("password") + ":",
-							Secret:   true,
-							Validate: cliui.ValidateNotEmpty,
-						})
-						if err != nil {
-							return xerrors.Errorf("specify password prompt: %w", err)
-						}
-						confirm, err := cliui.Prompt(cmd, cliui.PromptOptions{
-							Text:   "Confirm " + cliui.Styles.Field.Render("password") + ":",
-							Secret: true,
-						})
-						if err != nil {
-							return xerrors.Errorf("confirm password prompt: %w", err)
-						}
+				if !inv.ParsedFlags().Changed("first-user-trial") && os.Getenv(firstUserTrialEnv) == "" {
+					v, _ := cliui.Prompt(inv, cliui.PromptOptions{
+						Text:      "Start a trial of Enterprise?",
+						IsConfirm: true,
+						Default:   "yes",
+					})
+					trial = v == "yes" || v == "y"
+				}
 
-						matching = confirm == password
-						if !matching {
-							_, _ = fmt.Fprintln(cmd.OutOrStdout(), cliui.Styles.Error.Render("Passwords do not match"))
+				var trialInfo codersdk.CreateFirstUserTrialInfo
+				if trial {
+					if trialInfo.FirstName == "" {
+						trialInfo.FirstName, err = promptTrialInfo(inv, "firstName")
+						if err != nil {
+							return err
+						}
+					}
+					if trialInfo.LastName == "" {
+						trialInfo.LastName, err = promptTrialInfo(inv, "lastName")
+						if err != nil {
+							return err
+						}
+					}
+					if trialInfo.PhoneNumber == "" {
+						trialInfo.PhoneNumber, err = promptTrialInfo(inv, "phoneNumber")
+						if err != nil {
+							return err
+						}
+					}
+					if trialInfo.JobTitle == "" {
+						trialInfo.JobTitle, err = promptTrialInfo(inv, "jobTitle")
+						if err != nil {
+							return err
+						}
+					}
+					if trialInfo.CompanyName == "" {
+						trialInfo.CompanyName, err = promptTrialInfo(inv, "companyName")
+						if err != nil {
+							return err
+						}
+					}
+					if trialInfo.Country == "" {
+						trialInfo.Country, err = promptCountry(inv)
+						if err != nil {
+							return err
+						}
+					}
+					if trialInfo.Developers == "" {
+						trialInfo.Developers, err = promptDevelopers(inv)
+						if err != nil {
+							return err
 						}
 					}
 				}
 
-				_, err = client.CreateFirstUser(cmd.Context(), codersdk.CreateFirstUserRequest{
-					Email:            email,
-					Username:         username,
-					OrganizationName: username,
-					Password:         password,
+				_, err = client.CreateFirstUser(ctx, codersdk.CreateFirstUserRequest{
+					Email:     email,
+					Username:  username,
+					Name:      name,
+					Password:  password,
+					Trial:     trial,
+					TrialInfo: trialInfo,
 				})
 				if err != nil {
 					return xerrors.Errorf("create initial user: %w", err)
 				}
-				resp, err := client.LoginWithPassword(cmd.Context(), codersdk.LoginWithPasswordRequest{
-					Email:    email,
-					Password: password,
-				})
+
+				err := r.loginWithPassword(inv, client, email, password)
 				if err != nil {
-					return xerrors.Errorf("login with password: %w", err)
+					return err
 				}
 
-				sessionToken := resp.SessionToken
-				config := createConfig(cmd)
-				err = config.Session().Write(sessionToken)
-				if err != nil {
-					return xerrors.Errorf("write session token: %w", err)
-				}
-				err = config.URL().Write(serverURL.String())
+				err = r.createConfig().URL().Write(serverURL.String())
 				if err != nil {
 					return xerrors.Errorf("write server url: %w", err)
 				}
 
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					cliui.Styles.Paragraph.Render(fmt.Sprintf("Welcome to Coder, %s! You're authenticated.", cliui.Styles.Keyword.Render(username)))+"\n")
-
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					cliui.Styles.Paragraph.Render("Get started by creating a template: "+cliui.Styles.Code.Render("coder templates init"))+"\n")
+				_, _ = fmt.Fprintf(
+					inv.Stdout,
+					"Get started by creating a template: %s\n",
+					pretty.Sprint(cliui.DefaultStyles.Code, "coder templates init"),
+				)
 				return nil
 			}
 
-			sessionToken, _ := cmd.Flags().GetString(varToken)
+			sessionToken, _ := inv.ParsedFlags().GetString(varToken)
 			if sessionToken == "" {
 				authURL := *serverURL
 				// Don't use filepath.Join, we don't want to use the os separator
 				// for a url.
 				authURL.Path = path.Join(serverURL.Path, "/cli-auth")
-				if err := openURL(cmd, authURL.String()); err != nil {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Open the following in your browser:\n\n\t%s\n\n", authURL.String())
+				if err := openURL(inv, authURL.String()); err != nil {
+					_, _ = fmt.Fprintf(inv.Stdout, "Open the following in your browser:\n\n\t%s\n\n", authURL.String())
 				} else {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Your browser has been opened to visit:\n\n\t%s\n\n", authURL.String())
+					_, _ = fmt.Fprintf(inv.Stdout, "Your browser has been opened to visit:\n\n\t%s\n\n", authURL.String())
 				}
 
-				sessionToken, err = cliui.Prompt(cmd, cliui.PromptOptions{
+				sessionToken, err = cliui.Prompt(inv, cliui.PromptOptions{
 					Text:   "Paste your token here:",
 					Secret: true,
 					Validate: func(token string) error {
-						client.SessionToken = token
-						_, err := client.User(cmd.Context(), codersdk.Me)
+						client.SetSessionToken(token)
+						_, err := client.User(ctx, codersdk.Me)
 						if err != nil {
 							return xerrors.New("That's not a valid token!")
 						}
@@ -225,16 +370,32 @@ func login() *cobra.Command {
 				if err != nil {
 					return xerrors.Errorf("paste token prompt: %w", err)
 				}
+			} else if !useTokenForSession {
+				// If a session token is provided on the cli, use it to generate
+				// a new one. This is because the cli `--token` flag provides
+				// a token for the command being invoked. We should not store
+				// this token, and `/logout` should not delete it.
+				// /login should generate a new token and store that.
+				client.SetSessionToken(sessionToken)
+				// Use CreateAPIKey over CreateToken because this is a session
+				// key that should not show on the `tokens` page. This should
+				// match the same behavior of the `/cli-auth` page for generating
+				// a session token.
+				key, err := client.CreateAPIKey(ctx, "me")
+				if err != nil {
+					return xerrors.Errorf("create api key: %w", err)
+				}
+				sessionToken = key.Key
 			}
 
 			// Login to get user data - verify it is OK before persisting
-			client.SessionToken = sessionToken
-			resp, err := client.User(cmd.Context(), codersdk.Me)
+			client.SetSessionToken(sessionToken)
+			resp, err := client.User(ctx, codersdk.Me)
 			if err != nil {
 				return xerrors.Errorf("get user: %w", err)
 			}
 
-			config := createConfig(cmd)
+			config := r.createConfig()
 			err = config.Session().Write(sessionToken)
 			if err != nil {
 				return xerrors.Errorf("write session token: %w", err)
@@ -244,13 +405,47 @@ func login() *cobra.Command {
 				return xerrors.Errorf("write server url: %w", err)
 			}
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), caret+"Welcome to Coder, %s! You're authenticated.\n", cliui.Styles.Keyword.Render(resp.Username))
+			_, _ = fmt.Fprintf(inv.Stdout, Caret+"Welcome to Coder, %s! You're authenticated.\n", pretty.Sprint(cliui.DefaultStyles.Keyword, resp.Username))
 			return nil
 		},
 	}
-	cliflag.StringVarP(cmd.Flags(), &email, "email", "e", "CODER_EMAIL", "", "Specifies an email address to authenticate with.")
-	cliflag.StringVarP(cmd.Flags(), &username, "username", "u", "CODER_USERNAME", "", "Specifies a username to authenticate with.")
-	cliflag.StringVarP(cmd.Flags(), &password, "password", "p", "CODER_PASSWORD", "", "Specifies a password to authenticate with.")
+	cmd.Options = serpent.OptionSet{
+		{
+			Flag:        "first-user-email",
+			Env:         "CODER_FIRST_USER_EMAIL",
+			Description: "Specifies an email address to use if creating the first user for the deployment.",
+			Value:       serpent.StringOf(&email),
+		},
+		{
+			Flag:        "first-user-username",
+			Env:         "CODER_FIRST_USER_USERNAME",
+			Description: "Specifies a username to use if creating the first user for the deployment.",
+			Value:       serpent.StringOf(&username),
+		},
+		{
+			Flag:        "first-user-full-name",
+			Env:         "CODER_FIRST_USER_FULL_NAME",
+			Description: "Specifies a human-readable name for the first user of the deployment.",
+			Value:       serpent.StringOf(&name),
+		},
+		{
+			Flag:        "first-user-password",
+			Env:         "CODER_FIRST_USER_PASSWORD",
+			Description: "Specifies a password to use if creating the first user for the deployment.",
+			Value:       serpent.StringOf(&password),
+		},
+		{
+			Flag:        "first-user-trial",
+			Env:         firstUserTrialEnv,
+			Description: "Specifies whether a trial license should be provisioned for the Coder deployment or not.",
+			Value:       serpent.BoolOf(&trial),
+		},
+		{
+			Flag:        "use-token-as-session",
+			Description: "By default, the CLI will generate a new session token when logging in. This flag will instead use the provided token as the session token.",
+			Value:       serpent.BoolOf(&useTokenForSession),
+		},
+	}
 	return cmd
 }
 
@@ -267,8 +462,11 @@ func isWSL() (bool, error) {
 }
 
 // openURL opens the provided URL via user's default browser
-func openURL(cmd *cobra.Command, urlToOpen string) error {
-	noOpen, err := cmd.Flags().GetBool(varNoOpen)
+func openURL(inv *serpent.Invocation, urlToOpen string) error {
+	if !isTTYOut(inv) {
+		return xerrors.New("skipping browser open in non-interactive mode")
+	}
+	noOpen, err := inv.ParsedFlags().GetBool(varNoOpen)
 	if err != nil {
 		panic(err)
 	}
@@ -285,5 +483,65 @@ func openURL(cmd *cobra.Command, urlToOpen string) error {
 		return exec.Command("cmd.exe", "/c", "start", strings.ReplaceAll(urlToOpen, "&", "^&")).Start()
 	}
 
+	browserEnv := os.Getenv("BROWSER")
+	if browserEnv != "" {
+		browserSh := fmt.Sprintf("%s '%s'", browserEnv, urlToOpen)
+		cmd := exec.CommandContext(inv.Context(), "sh", "-c", browserSh)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return xerrors.Errorf("failed to run %v (out: %q): %w", cmd.Args, out, err)
+		}
+		return nil
+	}
+
 	return browser.OpenURL(urlToOpen)
+}
+
+func promptTrialInfo(inv *serpent.Invocation, fieldName string) (string, error) {
+	value, err := cliui.Prompt(inv, cliui.PromptOptions{
+		Text: fmt.Sprintf("Please enter %s:", pretty.Sprint(cliui.DefaultStyles.Field, fieldName)),
+		Validate: func(s string) error {
+			if strings.TrimSpace(s) == "" {
+				return xerrors.Errorf("%s is required", fieldName)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		if errors.Is(err, cliui.Canceled) {
+			return "", nil
+		}
+		return "", err
+	}
+	return value, nil
+}
+
+func promptDevelopers(inv *serpent.Invocation) (string, error) {
+	options := []string{"1-100", "101-500", "501-1000", "1001-2500", "2500+"}
+	selection, err := cliui.Select(inv, cliui.SelectOptions{
+		Options:    options,
+		HideSearch: false,
+		Message:    "Select the number of developers:",
+	})
+	if err != nil {
+		return "", xerrors.Errorf("select developers: %w", err)
+	}
+	return selection, nil
+}
+
+func promptCountry(inv *serpent.Invocation) (string, error) {
+	options := make([]string, len(codersdk.Countries))
+	for i, country := range codersdk.Countries {
+		options[i] = country.Name
+	}
+
+	selection, err := cliui.Select(inv, cliui.SelectOptions{
+		Options:    options,
+		Message:    "Select the country:",
+		HideSearch: false,
+	})
+	if err != nil {
+		return "", xerrors.Errorf("select country: %w", err)
+	}
+	return selection, nil
 }

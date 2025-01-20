@@ -13,15 +13,22 @@ SCRIPT_DIR=$(dirname "${BASH_SOURCE[0]}")
 (
 	cd "$SCRIPT_DIR"
 
-	# Dump the updated schema.
-	go run gen/dump/main.go
+	echo generate 1>&2
+
+	# Dump the updated schema (use make to utilize caching).
+	make -C ../.. --no-print-directory coderd/database/dump.sql
 	# The logic below depends on the exact version being correct :(
-	go run github.com/kyleconroy/sqlc/cmd/sqlc@v1.13.0 generate
+	sqlc generate
 
 	first=true
-	for fi in queries/*.sql.go; do
-		# Find the last line from the imports section and add 1.
+	files=$(find ./queries/ -type f -name "*.sql.go" | LC_ALL=C sort)
+	for fi in $files; do
+		# Find the last line from the imports section and add 1. We have to
+		# disable pipefail temporarily to avoid ERRPIPE errors when piping into
+		# `head -n1`.
+		set +o pipefail
 		cut=$(grep -n ')' "$fi" | head -n 1 | cut -d: -f1)
+		set -o pipefail
 		cut=$((cut + 1))
 
 		# Copy the header from the first file only, ignoring the source comment.
@@ -50,6 +57,8 @@ SCRIPT_DIR=$(dirname "${BASH_SOURCE[0]}")
 	go mod download
 	go run golang.org/x/tools/cmd/goimports@latest -w queries.sql.go
 
-	# Generate enums (e.g. unique constraints).
-	go run gen/enum/main.go
+	go run ../../scripts/dbgen
+	# This will error if a view is broken. This is in it's own package to avoid
+	# stuff like dbmock breaking builds if it's out of date from the interface.
+	go test ./gentest
 )

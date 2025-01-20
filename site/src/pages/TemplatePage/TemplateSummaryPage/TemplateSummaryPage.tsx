@@ -1,41 +1,30 @@
-import { useTemplateLayoutContext } from "components/TemplateLayout/TemplateLayout"
-import { FC } from "react"
-import { Helmet } from "react-helmet-async"
-import { pageTitle } from "util/page"
-import { TemplateSummaryPageView } from "./TemplateSummaryPageView"
+import { API } from "api/api";
+import { useTemplateLayoutContext } from "pages/TemplatePage/TemplateLayout";
+import type { FC } from "react";
+import { Helmet } from "react-helmet-async";
+import { useQuery } from "react-query";
+import { getTemplatePageTitle } from "../utils";
+import { TemplateSummaryPageView } from "./TemplateSummaryPageView";
 
 export const TemplateSummaryPage: FC = () => {
-  const { context } = useTemplateLayoutContext()
-  const {
-    template,
-    activeTemplateVersion,
-    templateResources,
-    templateVersions,
-    deleteTemplateError,
-    templateDAUs,
-  } = context
+	const { template, activeVersion } = useTemplateLayoutContext();
+	const { data: resources } = useQuery({
+		queryKey: ["templates", template.id, "resources"],
+		queryFn: () => API.getTemplateVersionResources(activeVersion.id),
+	});
 
-  if (!template || !activeTemplateVersion || !templateResources) {
-    throw new Error(
-      "This page should not be displayed until template, activeTemplateVersion or templateResources being loaded.",
-    )
-  }
+	return (
+		<>
+			<Helmet>
+				<title>{getTemplatePageTitle("Template", template)}</title>
+			</Helmet>
+			<TemplateSummaryPageView
+				resources={resources}
+				template={template}
+				activeVersion={activeVersion}
+			/>
+		</>
+	);
+};
 
-  return (
-    <>
-      <Helmet>
-        <title>{pageTitle(`${template.name} · Template`)}</title>
-      </Helmet>
-      <TemplateSummaryPageView
-        template={template}
-        activeTemplateVersion={activeTemplateVersion}
-        templateResources={templateResources}
-        templateVersions={templateVersions}
-        templateDAUs={templateDAUs}
-        deleteTemplateError={deleteTemplateError}
-      />
-    </>
-  )
-}
-
-export default TemplateSummaryPage
+export default TemplateSummaryPage;

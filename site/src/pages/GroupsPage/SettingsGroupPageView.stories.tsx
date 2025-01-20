@@ -1,21 +1,21 @@
-import { Story } from "@storybook/react"
-import { MockGroup } from "testHelpers/entities"
-import {
-  SettingsGroupPageView,
-  SettingsGroupPageViewProps,
-} from "./SettingsGroupPageView"
+import { action } from "@storybook/addon-actions";
+import type { Meta, StoryObj } from "@storybook/react";
+import { MockGroup } from "testHelpers/entities";
+import { SettingsGroupPageView } from "./SettingsGroupPageView";
 
-export default {
-  title: "pages/SettingsGroupPageView",
-  component: SettingsGroupPageView,
-}
+const meta: Meta<typeof SettingsGroupPageView> = {
+	title: "pages/GroupsPage/SettingsGroupPageView",
+	component: SettingsGroupPageView,
+	args: {
+		onCancel: action("onCancel"),
+		group: MockGroup,
+		isLoading: false,
+	},
+};
 
-const Template: Story<SettingsGroupPageViewProps> = (
-  args: SettingsGroupPageViewProps,
-) => <SettingsGroupPageView {...args} />
+export default meta;
+type Story = StoryObj<typeof SettingsGroupPageView>;
 
-export const Example = Template.bind({})
-Example.args = {
-  group: MockGroup,
-  isLoading: false,
-}
+const Example: Story = {};
+
+export { Example as SettingsGroupPageView };

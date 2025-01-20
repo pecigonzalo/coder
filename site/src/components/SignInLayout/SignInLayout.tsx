@@ -1,35 +1,44 @@
-import { makeStyles } from "@material-ui/core/styles"
-import { FC, ReactNode } from "react"
-import { Footer } from "../../components/Footer/Footer"
+import type { Interpolation, Theme } from "@emotion/react";
+import type { FC, PropsWithChildren } from "react";
 
-export const useStyles = makeStyles((theme) => ({
-  root: {
-    height: "100vh",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  layout: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-  },
-  container: {
-    marginTop: theme.spacing(-8),
-    minWidth: "320px",
-    maxWidth: "320px",
-  },
-}))
+export const SignInLayout: FC<PropsWithChildren> = ({ children }) => {
+	return (
+		<div css={styles.container}>
+			<div css={styles.content}>
+				<div css={styles.signIn}>{children}</div>
+				<div css={styles.copyright}>
+					{"\u00a9"} {new Date().getFullYear()} Coder Technologies, Inc.
+				</div>
+			</div>
+		</div>
+	);
+};
 
-export const SignInLayout: FC<{ children: ReactNode }> = ({ children }) => {
-  const styles = useStyles()
+const styles = {
+	container: {
+		flex: 1,
+		height: "-webkit-fill-available",
+		display: "flex",
+		justifyContent: "center",
+		alignItems: "center",
+	},
 
-  return (
-    <div className={styles.root}>
-      <div className={styles.layout}>
-        <div className={styles.container}>{children}</div>
-        <Footer />
-      </div>
-    </div>
-  )
-}
+	content: {
+		display: "flex",
+		flexDirection: "column",
+		alignItems: "center",
+	},
+
+	signIn: {
+		maxWidth: 385,
+		display: "flex",
+		flexDirection: "column",
+		alignItems: "center",
+	},
+
+	copyright: (theme) => ({
+		fontSize: 12,
+		color: theme.palette.text.secondary,
+		marginTop: 24,
+	}),
+} satisfies Record<string, Interpolation<Theme>>;

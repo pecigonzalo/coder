@@ -1,64 +1,32 @@
-import { Story } from "@storybook/react"
-import * as Mocks from "testHelpers/renderHelpers"
+import type { Meta, StoryObj } from "@storybook/react";
 import {
-  TemplateSummaryPageView,
-  TemplateSummaryPageViewProps,
-} from "./TemplateSummaryPageView"
+	MockTemplate,
+	MockTemplateVersion,
+	MockWorkspaceResource,
+	MockWorkspaceVolumeResource,
+} from "testHelpers/entities";
+import { TemplateSummaryPageView } from "./TemplateSummaryPageView";
 
-export default {
-  title: "pages/TemplateSummaryPageView",
-  component: TemplateSummaryPageView,
-}
+const meta: Meta<typeof TemplateSummaryPageView> = {
+	title: "pages/TemplatePage/TemplateSummaryPageView",
+	component: TemplateSummaryPageView,
+};
 
-const Template: Story<TemplateSummaryPageViewProps> = (args) => (
-  <TemplateSummaryPageView {...args} />
-)
+export default meta;
+type Story = StoryObj<typeof TemplateSummaryPageView>;
 
-export const Example = Template.bind({})
-Example.args = {
-  template: Mocks.MockTemplate,
-  activeTemplateVersion: Mocks.MockTemplateVersion,
-  templateResources: [
-    Mocks.MockWorkspaceResource,
-    Mocks.MockWorkspaceResource2,
-  ],
-  templateVersions: [Mocks.MockTemplateVersion],
-}
+export const Example: Story = {
+	args: {
+		template: MockTemplate,
+		activeVersion: MockTemplateVersion,
+		resources: [MockWorkspaceResource, MockWorkspaceVolumeResource],
+	},
+};
 
-export const NoIcon = Template.bind({})
-NoIcon.args = {
-  template: { ...Mocks.MockTemplate, icon: "" },
-  activeTemplateVersion: Mocks.MockTemplateVersion,
-  templateResources: [
-    Mocks.MockWorkspaceResource,
-    Mocks.MockWorkspaceResource2,
-  ],
-  templateVersions: [Mocks.MockTemplateVersion],
-}
-
-export const SmallViewport = Template.bind({})
-SmallViewport.args = {
-  template: Mocks.MockTemplate,
-  activeTemplateVersion: {
-    ...Mocks.MockTemplateVersion,
-    readme: `---
-name:Template test
----
-## Instructions
-You can add instructions here
-
-[Some link info](https://coder.com)
-\`\`\`
-# This is a really long sentence to test that the code block wraps into a new line properly.
-\`\`\`
-`,
-  },
-  templateResources: [
-    Mocks.MockWorkspaceResource,
-    Mocks.MockWorkspaceResource2,
-  ],
-  templateVersions: [Mocks.MockTemplateVersion],
-}
-SmallViewport.parameters = {
-  chromatic: { viewports: [600] },
-}
+export const NoIcon: Story = {
+	args: {
+		template: { ...MockTemplate, icon: "" },
+		activeVersion: MockTemplateVersion,
+		resources: [MockWorkspaceResource, MockWorkspaceVolumeResource],
+	},
+};

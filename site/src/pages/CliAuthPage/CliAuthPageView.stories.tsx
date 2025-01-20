@@ -1,17 +1,17 @@
-import { Story } from "@storybook/react"
-import { CliAuthPageView, CliAuthPageViewProps } from "./CliAuthPageView"
+import type { Meta, StoryObj } from "@storybook/react";
+import { CliAuthPageView } from "./CliAuthPageView";
 
-export default {
-  title: "pages/CliAuthPageView",
-  component: CliAuthPageView,
-  argTypes: {
-    sessionToken: { control: "text", defaultValue: "some-session-token" },
-  },
-}
+const meta: Meta<typeof CliAuthPageView> = {
+	title: "pages/CliAuthPage",
+	component: CliAuthPageView,
+	args: {
+		sessionToken: "some-session-token",
+	},
+};
 
-const Template: Story<CliAuthPageViewProps> = (args) => (
-  <CliAuthPageView {...args} />
-)
+export default meta;
+type Story = StoryObj<typeof CliAuthPageView>;
 
-export const Example = Template.bind({})
-Example.args = {}
+const Example: Story = {};
+
+export { Example as CliAuthPage };

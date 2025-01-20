@@ -5,11 +5,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-ping/ping"
+	ping "github.com/prometheus-community/pro-bing"
 	"golang.org/x/exp/slices"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/cryptorand"
+	"github.com/coder/coder/v2/coderd/util/slice"
+	"github.com/coder/coder/v2/cryptorand"
 )
 
 type Region struct {
@@ -19,13 +21,11 @@ type Region struct {
 }
 
 type Node struct {
-	ID                int    `json:"id"`
-	RegionID          int    `json:"region_id"`
-	HostnameHTTPS     string `json:"hostname_https"`
-	HostnameWireguard string `json:"hostname_wireguard"`
-	WireguardPort     uint16 `json:"wireguard_port"`
+	ID            int    `json:"id"`
+	RegionID      int    `json:"region_id"`
+	HostnameHTTPS string `json:"hostname_https"`
 
-	AvgLatency time.Duration `json:"avg_latency"`
+	AvgLatency time.Duration `json:"-"`
 }
 
 var Regions = []Region{
@@ -34,27 +34,52 @@ var Regions = []Region{
 		LocationName: "US East Pittsburgh",
 		Nodes: []Node{
 			{
-				ID:                1,
-				RegionID:          0,
-				HostnameHTTPS:     "pit-1.try.coder.app",
-				HostnameWireguard: "pit-1.try.coder.app",
-				WireguardPort:     55551,
+				ID:            1,
+				RegionID:      0,
+				HostnameHTTPS: "pit-1.try.coder.app",
 			},
 		},
 	},
 }
 
-func FindClosestNode() (Node, error) {
+// Nodes returns a list of nodes to use for the tunnel. It will pick a random
+// node from each region.
+//
+// If a customNode is provided, it will be returned as the only node with ID
+// 9999.
+func Nodes(customTunnelHost string) ([]Node, error) {
 	nodes := []Node{}
+
+	if customTunnelHost != "" {
+		return []Node{
+			{
+				ID:            9999,
+				RegionID:      9999,
+				HostnameHTTPS: customTunnelHost,
+			},
+		}, nil
+	}
 
 	for _, region := range Regions {
 		// Pick a random node from each region.
 		i, err := cryptorand.Intn(len(region.Nodes))
 		if err != nil {
-			return Node{}, err
+			return []Node{}, err
 		}
 		nodes = append(nodes, region.Nodes[i])
 	}
+
+	return nodes, nil
+}
+
+// FindClosestNode pings each node and returns the one with the lowest latency.
+func FindClosestNode(nodes []Node) (Node, error) {
+	if len(nodes) == 0 {
+		return Node{}, xerrors.New("no wgtunnel nodes")
+	}
+
+	// Copy the nodes so we don't mutate the original.
+	nodes = append([]Node{}, nodes...)
 
 	var (
 		nodesMu sync.Mutex
@@ -73,6 +98,7 @@ func FindClosestNode() (Node, error) {
 			}
 
 			pinger.Count = 5
+			pinger.Timeout = 5 * time.Second
 			err = pinger.Run()
 			if err != nil {
 				return err
@@ -90,8 +116,8 @@ func FindClosestNode() (Node, error) {
 		return Node{}, err
 	}
 
-	slices.SortFunc(nodes, func(i, j Node) bool {
-		return i.AvgLatency < j.AvgLatency
+	slices.SortFunc(nodes, func(a, b Node) int {
+		return slice.Ascending(a.AvgLatency, b.AvgLatency)
 	})
 	return nodes[0], nil
 }

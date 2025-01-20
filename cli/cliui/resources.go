@@ -9,9 +9,9 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 	"golang.org/x/mod/semver"
 
-	"github.com/coder/coder/coderd/database"
-
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database/dbtime"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/pretty"
 )
 
 type WorkspaceResourcesOptions struct {
@@ -50,6 +50,7 @@ func WorkspaceResources(writer io.Writer, resources []codersdk.WorkspaceResource
 	row := table.Row{"Resource"}
 	if !options.HideAgentState {
 		row = append(row, "Status")
+		row = append(row, "Health")
 		row = append(row, "Version")
 	}
 	if !options.HideAccess {
@@ -78,7 +79,8 @@ func WorkspaceResources(writer io.Writer, resources []codersdk.WorkspaceResource
 
 		// Display a line for the resource.
 		tableWriter.AppendRow(table.Row{
-			Styles.Bold.Render(resourceAddress),
+			Bold(resourceAddress),
+			"",
 			"",
 			"",
 		})
@@ -93,20 +95,20 @@ func WorkspaceResources(writer io.Writer, resources []codersdk.WorkspaceResource
 				fmt.Sprintf("%s─ %s (%s, %s)", pipe, agent.Name, agent.OperatingSystem, agent.Architecture),
 			}
 			if !options.HideAgentState {
-				var agentStatus string
-				var agentVersion string
+				var agentStatus, agentHealth, agentVersion string
 				if !options.HideAgentState {
 					agentStatus = renderAgentStatus(agent)
+					agentHealth = renderAgentHealth(agent)
 					agentVersion = renderAgentVersion(agent.Version, options.ServerVersion)
 				}
-				row = append(row, agentStatus, agentVersion)
+				row = append(row, agentStatus, agentHealth, agentVersion)
 			}
 			if !options.HideAccess {
 				sshCommand := "coder ssh " + options.WorkspaceName
 				if totalAgents > 1 {
 					sshCommand += "." + agent.Name
 				}
-				sshCommand = Styles.Code.Render(sshCommand)
+				sshCommand = pretty.Sprint(DefaultStyles.Code, sshCommand)
 				row = append(row, sshCommand)
 			}
 			tableWriter.AppendRow(row)
@@ -120,18 +122,32 @@ func WorkspaceResources(writer io.Writer, resources []codersdk.WorkspaceResource
 func renderAgentStatus(agent codersdk.WorkspaceAgent) string {
 	switch agent.Status {
 	case codersdk.WorkspaceAgentConnecting:
-		since := database.Now().Sub(agent.CreatedAt)
-		return Styles.Warn.Render("⦾ connecting") + " " +
-			Styles.Placeholder.Render("["+strconv.Itoa(int(since.Seconds()))+"s]")
+		since := dbtime.Now().Sub(agent.CreatedAt)
+		return pretty.Sprint(DefaultStyles.Warn, "⦾ connecting") + " " +
+			pretty.Sprint(DefaultStyles.Placeholder, "["+strconv.Itoa(int(since.Seconds()))+"s]")
 	case codersdk.WorkspaceAgentDisconnected:
-		since := database.Now().Sub(*agent.DisconnectedAt)
-		return Styles.Error.Render("⦾ disconnected") + " " +
-			Styles.Placeholder.Render("["+strconv.Itoa(int(since.Seconds()))+"s]")
+		since := dbtime.Now().Sub(*agent.DisconnectedAt)
+		return pretty.Sprint(DefaultStyles.Error, "⦾ disconnected") + " " +
+			pretty.Sprint(DefaultStyles.Placeholder, "["+strconv.Itoa(int(since.Seconds()))+"s]")
+	case codersdk.WorkspaceAgentTimeout:
+		since := dbtime.Now().Sub(agent.CreatedAt)
+		return fmt.Sprintf(
+			"%s %s",
+			pretty.Sprint(DefaultStyles.Warn, "⦾ timeout"),
+			pretty.Sprint(DefaultStyles.Placeholder, "["+strconv.Itoa(int(since.Seconds()))+"s]"),
+		)
 	case codersdk.WorkspaceAgentConnected:
-		return Styles.Keyword.Render("⦿ connected")
+		return pretty.Sprint(DefaultStyles.Keyword, "⦿ connected")
 	default:
-		return Styles.Warn.Render("○ unknown")
+		return pretty.Sprint(DefaultStyles.Warn, "○ unknown")
 	}
+}
+
+func renderAgentHealth(agent codersdk.WorkspaceAgent) string {
+	if agent.Health.Healthy {
+		return pretty.Sprint(DefaultStyles.Keyword, "✔ healthy")
+	}
+	return pretty.Sprint(DefaultStyles.Error, "✘ "+agent.Health.Reason)
 }
 
 func renderAgentVersion(agentVersion, serverVersion string) string {
@@ -139,11 +155,11 @@ func renderAgentVersion(agentVersion, serverVersion string) string {
 		agentVersion = "(unknown)"
 	}
 	if !semver.IsValid(serverVersion) || !semver.IsValid(agentVersion) {
-		return Styles.Placeholder.Render(agentVersion)
+		return pretty.Sprint(DefaultStyles.Placeholder, agentVersion)
 	}
 	outdated := semver.Compare(agentVersion, serverVersion) < 0
 	if outdated {
-		return Styles.Warn.Render(agentVersion + " (outdated)")
+		return pretty.Sprint(DefaultStyles.Warn, agentVersion+" (outdated)")
 	}
-	return Styles.Keyword.Render(agentVersion)
+	return pretty.Sprint(DefaultStyles.Keyword, agentVersion)
 }

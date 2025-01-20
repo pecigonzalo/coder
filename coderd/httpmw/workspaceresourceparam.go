@@ -8,9 +8,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 type workspaceResourceParamContextKey struct{}
@@ -29,7 +29,7 @@ func ExtractWorkspaceResourceParam(db database.Store) func(http.Handler) http.Ha
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-			resourceUUID, parsed := parseUUID(rw, r, "workspaceresource")
+			resourceUUID, parsed := ParseUUIDParam(rw, r, "workspaceresource")
 			if !parsed {
 				return
 			}

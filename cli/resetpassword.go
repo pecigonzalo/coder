@@ -1,64 +1,78 @@
+//go:build !slim
+
 package cli
 
 import (
-	"database/sql"
 	"fmt"
 
-	"github.com/spf13/cobra"
 	"golang.org/x/xerrors"
 
-	"github.com/coder/coder/cli/cliflag"
-	"github.com/coder/coder/cli/cliui"
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/database/migrations"
-	"github.com/coder/coder/coderd/userpassword"
+	"cdr.dev/slog"
+	"cdr.dev/slog/sloggers/sloghuman"
+	"github.com/coder/coder/v2/coderd/database/awsiamrds"
+	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/pretty"
+	"github.com/coder/serpent"
+
+	"github.com/coder/coder/v2/cli/cliui"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/userpassword"
 )
 
-func resetPassword() *cobra.Command {
+func (*RootCmd) resetPassword() *serpent.Command {
 	var (
-		postgresURL string
+		postgresURL  string
+		postgresAuth string
 	)
 
-	root := &cobra.Command{
-		Use:   "reset-password <username>",
-		Short: "Directly connect to the database to reset a user's password",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			username := args[0]
+	root := &serpent.Command{
+		Use:        "reset-password <username>",
+		Short:      "Directly connect to the database to reset a user's password",
+		Middleware: serpent.RequireNArgs(1),
+		Handler: func(inv *serpent.Invocation) error {
+			username := inv.Args[0]
 
-			sqlDB, err := sql.Open("postgres", postgresURL)
+			logger := slog.Make(sloghuman.Sink(inv.Stdout))
+			if ok, _ := inv.ParsedFlags().GetBool("verbose"); ok {
+				logger = logger.Leveled(slog.LevelDebug)
+			}
+
+			sqlDriver := "postgres"
+			if codersdk.PostgresAuth(postgresAuth) == codersdk.PostgresAuthAWSIAMRDS {
+				var err error
+				sqlDriver, err = awsiamrds.Register(inv.Context(), sqlDriver)
+				if err != nil {
+					return xerrors.Errorf("register aws rds iam auth: %w", err)
+				}
+			}
+
+			sqlDB, err := ConnectToPostgres(inv.Context(), logger, sqlDriver, postgresURL, nil)
 			if err != nil {
 				return xerrors.Errorf("dial postgres: %w", err)
 			}
 			defer sqlDB.Close()
-			err = sqlDB.Ping()
-			if err != nil {
-				return xerrors.Errorf("ping postgres: %w", err)
-			}
 
-			err = migrations.EnsureClean(sqlDB)
-			if err != nil {
-				return xerrors.Errorf("database needs migration: %w", err)
-			}
 			db := database.New(sqlDB)
 
-			user, err := db.GetUserByEmailOrUsername(cmd.Context(), database.GetUserByEmailOrUsernameParams{
+			user, err := db.GetUserByEmailOrUsername(inv.Context(), database.GetUserByEmailOrUsernameParams{
 				Username: username,
 			})
 			if err != nil {
 				return xerrors.Errorf("retrieving user: %w", err)
 			}
 
-			password, err := cliui.Prompt(cmd, cliui.PromptOptions{
-				Text:     "Enter new " + cliui.Styles.Field.Render("password") + ":",
-				Secret:   true,
-				Validate: cliui.ValidateNotEmpty,
+			password, err := cliui.Prompt(inv, cliui.PromptOptions{
+				Text:   "Enter new " + pretty.Sprint(cliui.DefaultStyles.Field, "password") + ":",
+				Secret: true,
+				Validate: func(s string) error {
+					return userpassword.Validate(s)
+				},
 			})
 			if err != nil {
 				return xerrors.Errorf("password prompt: %w", err)
 			}
-			confirmedPassword, err := cliui.Prompt(cmd, cliui.PromptOptions{
-				Text:     "Confirm " + cliui.Styles.Field.Render("password") + ":",
+			confirmedPassword, err := cliui.Prompt(inv, cliui.PromptOptions{
+				Text:     "Confirm " + pretty.Sprint(cliui.DefaultStyles.Field, "password") + ":",
 				Secret:   true,
 				Validate: cliui.ValidateNotEmpty,
 			})
@@ -74,7 +88,7 @@ func resetPassword() *cobra.Command {
 				return xerrors.Errorf("hash password: %w", err)
 			}
 
-			err = db.UpdateUserHashedPassword(cmd.Context(), database.UpdateUserHashedPasswordParams{
+			err = db.UpdateUserHashedPassword(inv.Context(), database.UpdateUserHashedPasswordParams{
 				ID:             user.ID,
 				HashedPassword: []byte(hashedPassword),
 			})
@@ -82,12 +96,27 @@ func resetPassword() *cobra.Command {
 				return xerrors.Errorf("updating password: %w", err)
 			}
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "\nPassword has been reset for user %s!\n", cliui.Styles.Keyword.Render(user.Username))
+			_, _ = fmt.Fprintf(inv.Stdout, "\nPassword has been reset for user %s!\n", pretty.Sprint(cliui.DefaultStyles.Keyword, user.Username))
 			return nil
 		},
 	}
 
-	cliflag.StringVarP(root.Flags(), &postgresURL, "postgres-url", "", "CODER_PG_CONNECTION_URL", "", "URL of a PostgreSQL database to connect to")
+	root.Options = serpent.OptionSet{
+		{
+			Flag:        "postgres-url",
+			Description: "URL of a PostgreSQL database to connect to.",
+			Env:         "CODER_PG_CONNECTION_URL",
+			Value:       serpent.StringOf(&postgresURL),
+		},
+		serpent.Option{
+			Name:        "Postgres Connection Auth",
+			Description: "Type of auth to use when connecting to postgres.",
+			Flag:        "postgres-connection-auth",
+			Env:         "CODER_PG_CONNECTION_AUTH",
+			Default:     "password",
+			Value:       serpent.EnumOf(&postgresAuth, codersdk.PostgresAuthDrivers...),
+		},
+	}
 
 	return root
 }

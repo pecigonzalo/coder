@@ -1,14 +1,17 @@
 # Authz
 
-Package `authz` implements AuthoriZation for Coder.
+Package `rbac` implements Role-Based Access Control for Coder.
+
+See [USAGE.md](USAGE.md) for a hands-on approach to using this package.
 
 ## Overview
 
 Authorization defines what **permission** a **subject** has to perform **actions** to **objects**:
-- **Permission** is binary: *yes* (allowed) or *no* (denied).
-- **Subject** in this case is anything that implements interface `authz.Subject`.
-- **Action** here is an enumerated list of actions, but we stick to `Create`, `Read`, `Update`, and `Delete` here.
-- **Object** here is anything that implements `authz.Object`.
+
+- **Permission** is binary: _yes_ (allowed) or _no_ (denied).
+- **Subject** in this case is anything that implements interface `rbac.Subject`.
+- **Action** here is an enumerated list of actions. Actions can differ for each object type. They typically read like, `Create`, `Read`, `Update`, `Delete`, etc.
+- **Object** here is anything that implements `rbac.Object`.
 
 ## Permission Structure
 
@@ -22,6 +25,7 @@ A **permission** is always applied at a given **level**:
 **Permissions** at a higher **level** always override permissions at a **lower** level.
 
 The effect of a **permission** can be:
+
 - **positive** (allows)
 - **negative** (denies)
 - **abstain** (neither allows or denies, not applicable)
@@ -29,15 +33,14 @@ The effect of a **permission** can be:
 **Negative** permissions **always** override **positive** permissions at the same level.
 Both **negative** and **positive** permissions override **abstain** at the same level.
 
-This can be represented by the following truth table, where Y represents *positive*, N represents *negative*, and _ represents *abstain*:
+This can be represented by the following truth table, where Y represents _positive_, N represents _negative_, and \_ represents _abstain_:
 
 | Action | Positive | Negative | Result |
 |--------|----------|----------|--------|
-| read   | Y        | _        | Y      |
+| read   | Y        | \_       | Y      |
 | read   | Y        | N        | N      |
-| read   | _        | _        | _      |
-| read   | _        | N        | Y      |
-
+| read   | \_       | \_       | \_     |
+| read   | \_       | N        | N      |
 
 ## Permission Representation
 
@@ -47,27 +50,70 @@ This can be represented by the following truth table, where Y represents *positi
 - `level` is either `site`, `org`, or `user`.
 - `object` is any valid resource type.
 - `id` is any valid UUID v4.
-- `action` is `create`, `read`, `modify`, or `delete`.
+- `id` is included in the permission syntax, however only scopes may use `id` to specify a specific object.
+- `action` is typically `create`, `read`, `modify`, `delete`, but you can define other verbs as needed.
 
 ## Example Permissions
 
-- `+site.*.*.read`: allowed to perform the `read` action against all objects of type `app` in a given Coder deployment.
+- `+site.app.*.read`: allowed to perform the `read` action against all objects of type `app` in a given Coder deployment.
 - `-user.workspace.*.create`: user is not allowed to create workspaces.
 
 ## Roles
 
-A *role* is a set of permissions. When evaluating a role's permission to form an action, all the relevant permissions for the role are combined at each level. Permissions at a higher level override permissions at a lower level.
+A _role_ is a set of permissions. When evaluating a role's permission to form an action, all the relevant permissions for the role are combined at each level. Permissions at a higher level override permissions at a lower level.
 
 The following table shows the per-level role evaluation.
-Y indicates that the role provides positive permissions, N indicates the role provides negative permissions, and _ indicates the role does not provide positive or negative permissions. YN_ indicates that the value in the cell does not matter for the access result.
+Y indicates that the role provides positive permissions, N indicates the role provides negative permissions, and _indicates the role does not provide positive or negative permissions. YN_ indicates that the value in the cell does not matter for the access result.
 
-| Role (example)  | Site | Org | User | Result |
-|-----------------|------|-----|------|--------|
-| site-admin      | Y    | YN_ | YN_  | Y      |
-| no-permission   | N    | YN_ | YN_  | N      |
-| org-admin       | _    | Y   | YN_  | Y      |
-| non-org-member  | _    | N   | YN_  | N      |
-| user            | _    | _   | Y    | Y      |
-|                 | _    | _   | N    | N      |
-| unauthenticated | _    | _   | _    | N      |
+| Role (example)  | Site | Org  | User | Result |
+|-----------------|------|------|------|--------|
+| site-admin      | Y    | YN\_ | YN\_ | Y      |
+| no-permission   | N    | YN\_ | YN\_ | N      |
+| org-admin       | \_   | Y    | YN\_ | Y      |
+| non-org-member  | \_   | N    | YN\_ | N      |
+| user            | \_   | \_   | Y    | Y      |
+|                 | \_   | \_   | N    | N      |
+| unauthenticated | \_   | \_   | \_   | N      |
 
+## Scopes
+
+Scopes can restrict a given set of permissions. The format of a scope matches a role with the addition of a list of resource ids. For a authorization call to be successful, the subject's roles and the subject's scopes must both allow the action. This means the resulting permissions is the intersection of the subject's roles and the subject's scopes.
+
+An example to give a readonly token is to grant a readonly scope across all resources `+site.*.*.read`. The intersection with the user's permissions will be the readonly set of their permissions.
+
+### Resource IDs
+
+There exists use cases that require specifying a specific resource. If resource IDs are allowed in the roles, then there is
+an unbounded set of resource IDs that be added to an "allow_list", as the number of roles a user can have is unbounded. This also adds a level of complexity to the role evaluation logic that has large costs at scale.
+
+The use case for specifying this type of permission in a role is limited, and does not justify the extra cost. To solve this for the remaining cases (eg. workspace agent tokens), we can apply an `allow_list` on a scope. For most cases, the `allow_list` will just be `["*"]` which means the scope is allowed to be applied to any resource. This adds negligible cost to the role evaluation logic and 0 cost to partial evaluations.
+
+Example of a scope for a workspace agent token, using an `allow_list` containing a single resource id.
+
+```javascript
+    "scope": {
+      "name": "workspace_agent",
+      "display_name": "Workspace_Agent",
+      // The ID of the given workspace the agent token correlates to.
+      "allow_list": ["10d03e62-7703-4df5-a358-4f76577d4e2f"],
+      "site": [/* ... perms ... */],
+      "org": {/* ... perms ... */},
+      "user": [/* ... perms ... */]
+    }
+```
+
+## Testing
+
+You can test outside of golang by using the `opa` cli.
+
+**Evaluation**
+
+```bash
+opa eval --format=pretty "data.authz.allow" -d policy.rego -i input.json
+```
+
+**Partial Evaluation**
+
+```bash
+opa eval --partial --format=pretty 'data.authz.allow' -d policy.rego --unknowns input.object.owner --unknowns input.object.org_owner --unknowns input.object.acl_user_list --unknowns input.object.acl_group_list -i input.json
+```

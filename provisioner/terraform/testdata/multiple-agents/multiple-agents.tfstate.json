@@ -1,6 +1,6 @@
 {
   "format_version": "1.0",
-  "terraform_version": "1.2.8",
+  "terraform_version": "1.9.8",
   "values": {
     "root_module": {
       "resources": [
@@ -14,15 +14,40 @@
           "values": {
             "arch": "amd64",
             "auth": "token",
+            "connection_timeout": 120,
             "dir": null,
+            "display_apps": [
+              {
+                "port_forwarding_helper": true,
+                "ssh_helper": true,
+                "vscode": true,
+                "vscode_insiders": false,
+                "web_terminal": true
+              }
+            ],
             "env": null,
-            "id": "882ce97a-3c12-410f-8916-e3bc03862162",
+            "id": "c76ed902-d4cb-4905-9961-4d58dda135f9",
             "init_script": "",
+            "login_before_ready": true,
+            "metadata": [],
+            "motd_file": null,
+            "order": null,
             "os": "linux",
+            "shutdown_script": null,
+            "shutdown_script_timeout": 300,
             "startup_script": null,
-            "token": "b24ba29b-8cb3-42da-91c5-599c7be310f7"
+            "startup_script_behavior": null,
+            "startup_script_timeout": 300,
+            "token": "f1aa99ea-570d-49cf-aef9-a4241e3cb023",
+            "troubleshooting_url": null
           },
-          "sensitive_values": {}
+          "sensitive_values": {
+            "display_apps": [
+              {}
+            ],
+            "metadata": [],
+            "token": true
+          }
         },
         {
           "address": "coder_agent.dev2",
@@ -34,15 +59,40 @@
           "values": {
             "arch": "amd64",
             "auth": "token",
+            "connection_timeout": 1,
             "dir": null,
+            "display_apps": [
+              {
+                "port_forwarding_helper": true,
+                "ssh_helper": true,
+                "vscode": true,
+                "vscode_insiders": false,
+                "web_terminal": true
+              }
+            ],
             "env": null,
-            "id": "8a26cec7-3189-4eaf-99a1-1dce00b756dc",
+            "id": "1b037439-4eb3-408e-83da-28dc93645944",
             "init_script": "",
+            "login_before_ready": true,
+            "metadata": [],
+            "motd_file": "/etc/motd",
+            "order": null,
             "os": "darwin",
+            "shutdown_script": "echo bye bye",
+            "shutdown_script_timeout": 30,
             "startup_script": null,
-            "token": "6a155e3b-3279-40cb-9c16-4b827b561bc1"
+            "startup_script_behavior": "non-blocking",
+            "startup_script_timeout": 30,
+            "token": "20d4e89e-d6de-4eb7-8877-f9186d684aa5",
+            "troubleshooting_url": null
           },
-          "sensitive_values": {}
+          "sensitive_values": {
+            "display_apps": [
+              {}
+            ],
+            "metadata": [],
+            "token": true
+          }
         },
         {
           "address": "coder_agent.dev3",
@@ -54,15 +104,85 @@
           "values": {
             "arch": "arm64",
             "auth": "token",
+            "connection_timeout": 120,
             "dir": null,
+            "display_apps": [
+              {
+                "port_forwarding_helper": true,
+                "ssh_helper": true,
+                "vscode": true,
+                "vscode_insiders": false,
+                "web_terminal": true
+              }
+            ],
             "env": null,
-            "id": "57486477-64a5-4fea-8223-dbf3c259d710",
+            "id": "453b5404-8ea4-4197-8664-3638e6a012ca",
             "init_script": "",
+            "login_before_ready": true,
+            "metadata": [],
+            "motd_file": null,
+            "order": null,
             "os": "windows",
+            "shutdown_script": null,
+            "shutdown_script_timeout": 300,
             "startup_script": null,
-            "token": "0fa9933e-802a-4d6a-b273-43c05993e52a"
+            "startup_script_behavior": "blocking",
+            "startup_script_timeout": 300,
+            "token": "0355cb42-9da0-4bad-b2aa-74db1df76fef",
+            "troubleshooting_url": "https://coder.com/troubleshoot"
           },
-          "sensitive_values": {}
+          "sensitive_values": {
+            "display_apps": [
+              {}
+            ],
+            "metadata": [],
+            "token": true
+          }
+        },
+        {
+          "address": "coder_agent.dev4",
+          "mode": "managed",
+          "type": "coder_agent",
+          "name": "dev4",
+          "provider_name": "registry.terraform.io/coder/coder",
+          "schema_version": 0,
+          "values": {
+            "arch": "amd64",
+            "auth": "token",
+            "connection_timeout": 120,
+            "dir": null,
+            "display_apps": [
+              {
+                "port_forwarding_helper": true,
+                "ssh_helper": true,
+                "vscode": true,
+                "vscode_insiders": false,
+                "web_terminal": true
+              }
+            ],
+            "env": null,
+            "id": "c0a68e9b-5b29-4d95-b664-5ac71dd633cf",
+            "init_script": "",
+            "login_before_ready": false,
+            "metadata": [],
+            "motd_file": null,
+            "order": null,
+            "os": "linux",
+            "shutdown_script": null,
+            "shutdown_script_timeout": 300,
+            "startup_script": null,
+            "startup_script_behavior": null,
+            "startup_script_timeout": 300,
+            "token": "34b78439-5d6e-431b-b06c-339f97a1e9cf",
+            "troubleshooting_url": null
+          },
+          "sensitive_values": {
+            "display_apps": [
+              {}
+            ],
+            "metadata": [],
+            "token": true
+          }
         },
         {
           "address": "null_resource.dev",
@@ -72,14 +192,15 @@
           "provider_name": "registry.terraform.io/hashicorp/null",
           "schema_version": 0,
           "values": {
-            "id": "8587500025119121667",
+            "id": "5109814714394194897",
             "triggers": null
           },
           "sensitive_values": {},
           "depends_on": [
             "coder_agent.dev1",
             "coder_agent.dev2",
-            "coder_agent.dev3"
+            "coder_agent.dev3",
+            "coder_agent.dev4"
           ]
         }
       ]

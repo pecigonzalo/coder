@@ -22,8 +22,9 @@ version)
 	;;
 init)
 	case "$MODE" in
-	apply)
+	plan)
 		echo "init"
+		exit 0
 		;;
 	init)
 		sleep 10 &
@@ -31,7 +32,7 @@ init)
 
 		trap 'echo exit; kill -9 $sleep_pid 2>/dev/null' EXIT
 		trap 'echo interrupt; exit 1' INT
-		trap 'echo terminate"; exit 2' TERM
+		trap 'echo terminate; exit 2' TERM
 
 		echo init_start
 		wait
@@ -39,22 +40,22 @@ init)
 		;;
 	esac
 	;;
-apply)
+plan)
 	sleep 10 &
 	sleep_pid=$!
 
 	trap 'json_print exit; kill -9 $sleep_pid 2>/dev/null' EXIT
 	trap 'json_print interrupt; exit 1' INT
-	trap 'json_print terminate"; exit 2' TERM
+	trap 'json_print terminate; exit 2' TERM
 
-	json_print apply_start
+	json_print plan_start
 	wait
-	json_print apply_end
+	json_print plan_end
 	;;
-plan)
-	echo "plan not supported"
+apply)
+	echo "apply not supported"
 	exit 1
 	;;
 esac
 
-exit 0
+exit 10

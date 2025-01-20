@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/coder/coder/cli/clitest"
-	"github.com/coder/coder/coderd/coderdtest"
+	"github.com/coder/coder/v2/cli/clitest"
+	"github.com/coder/coder/v2/coderd/coderdtest"
 )
 
 func TestPublicKey(t *testing.T) {
@@ -16,11 +16,11 @@ func TestPublicKey(t *testing.T) {
 		t.Parallel()
 		client := coderdtest.New(t, nil)
 		_ = coderdtest.CreateFirstUser(t, client)
-		cmd, root := clitest.New(t, "publickey")
+		inv, root := clitest.New(t, "publickey")
 		clitest.SetupConfig(t, client, root)
 		buf := new(bytes.Buffer)
-		cmd.SetOut(buf)
-		err := cmd.Execute()
+		inv.Stdout = buf
+		err := inv.Run()
 		require.NoError(t, err)
 		publicKey := buf.String()
 		require.NotEmpty(t, publicKey)

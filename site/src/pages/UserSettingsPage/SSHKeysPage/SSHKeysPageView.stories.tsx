@@ -1,53 +1,38 @@
-import { Story } from "@storybook/react"
-import { makeMockApiError } from "testHelpers/entities"
-import { SSHKeysPageView, SSHKeysPageViewProps } from "./SSHKeysPageView"
+import type { Meta, StoryObj } from "@storybook/react";
+import { mockApiError } from "testHelpers/entities";
+import { SSHKeysPageView } from "./SSHKeysPageView";
 
-export default {
-  title: "components/SSHKeysPageView",
-  component: SSHKeysPageView,
-  argTypes: {
-    onRegenerateClick: { action: "Submit" },
-  },
-}
+const meta: Meta<typeof SSHKeysPageView> = {
+	title: "pages/UserSettingsPage/SSHKeysPageView",
+	component: SSHKeysPageView,
+	args: {
+		isLoading: false,
+		sshKey: {
+			user_id: "test-user-id",
+			created_at: "2022-07-28T07:45:50.795918897Z",
+			updated_at: "2022-07-28T07:45:50.795919142Z",
+			public_key:
+				"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICnKzATuWwmmt5+CKTPuRGN0R1PBemA+6/SStpLiyX+L",
+		},
+	},
+};
 
-const Template: Story<SSHKeysPageViewProps> = (args: SSHKeysPageViewProps) => (
-  <SSHKeysPageView {...args} />
-)
+export default meta;
+type Story = StoryObj<typeof SSHKeysPageView>;
 
-export const Example = Template.bind({})
-Example.args = {
-  isLoading: false,
-  hasLoaded: true,
-  sshKey: {
-    user_id: "test-user-id",
-    created_at: "2022-07-28T07:45:50.795918897Z",
-    updated_at: "2022-07-28T07:45:50.795919142Z",
-    public_key: "SSH-Key",
-  },
-  onRegenerateClick: () => {
-    return Promise.resolve()
-  },
-}
+export const Example: Story = {};
 
-export const Loading = Template.bind({})
-Loading.args = {
-  ...Example.args,
-  isLoading: true,
-}
+export const Loading: Story = {
+	args: {
+		isLoading: true,
+	},
+};
 
-export const WithGetSSHKeyError = Template.bind({})
-WithGetSSHKeyError.args = {
-  ...Example.args,
-  hasLoaded: false,
-  getSSHKeyError: makeMockApiError({
-    message: "Failed to get SSH key",
-  }),
-}
-
-export const WithRegenerateSSHKeyError = Template.bind({})
-WithRegenerateSSHKeyError.args = {
-  ...Example.args,
-  regenerateSSHKeyError: makeMockApiError({
-    message: "Failed to regenerate SSH key",
-  }),
-}
+export const WithGetSSHKeyError: Story = {
+	args: {
+		sshKey: undefined,
+		getSSHKeyError: mockApiError({
+			message: "Failed to get SSH key",
+		}),
+	},
+};

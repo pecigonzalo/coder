@@ -2,15 +2,13 @@ package httpmw
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/coder/coder/coderd/database"
-	"github.com/coder/coder/coderd/httpapi"
-	"github.com/coder/coder/codersdk"
+	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/httpapi"
+	"github.com/coder/coder/v2/codersdk"
 )
 
 type workspaceAgentParamContextKey struct{}
@@ -29,15 +27,15 @@ func ExtractWorkspaceAgentParam(db database.Store) func(http.Handler) http.Handl
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
-			agentUUID, parsed := parseUUID(rw, r, "workspaceagent")
+			agentUUID, parsed := ParseUUIDParam(rw, r, "workspaceagent")
 			if !parsed {
 				return
 			}
 
 			agent, err := db.GetWorkspaceAgentByID(ctx, agentUUID)
-			if errors.Is(err, sql.ErrNoRows) {
+			if httpapi.Is404Error(err) {
 				httpapi.Write(ctx, rw, http.StatusNotFound, codersdk.Response{
-					Message: "Agent doesn't exist with that id.",
+					Message: "Agent doesn't exist with that id, or you do not have access to it.",
 				})
 				return
 			}

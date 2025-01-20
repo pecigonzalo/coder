@@ -1,6 +1,6 @@
 {
-  "format_version": "1.1",
-  "terraform_version": "1.2.8",
+  "format_version": "1.2",
+  "terraform_version": "1.9.8",
   "planned_values": {
     "root_module": {
       "resources": [
@@ -14,12 +14,26 @@
           "values": {
             "arch": "amd64",
             "auth": "google-instance-identity",
+            "connection_timeout": 120,
             "dir": null,
             "env": null,
+            "login_before_ready": true,
+            "metadata": [],
+            "motd_file": null,
+            "order": null,
             "os": "linux",
-            "startup_script": null
+            "shutdown_script": null,
+            "shutdown_script_timeout": 300,
+            "startup_script": null,
+            "startup_script_behavior": null,
+            "startup_script_timeout": 300,
+            "troubleshooting_url": null
           },
-          "sensitive_values": {}
+          "sensitive_values": {
+            "display_apps": [],
+            "metadata": [],
+            "token": true
+          }
         },
         {
           "address": "coder_agent_instance.main",
@@ -56,23 +70,39 @@
       "name": "main",
       "provider_name": "registry.terraform.io/coder/coder",
       "change": {
-        "actions": ["create"],
+        "actions": [
+          "create"
+        ],
         "before": null,
         "after": {
           "arch": "amd64",
           "auth": "google-instance-identity",
+          "connection_timeout": 120,
           "dir": null,
           "env": null,
+          "login_before_ready": true,
+          "metadata": [],
+          "motd_file": null,
+          "order": null,
           "os": "linux",
-          "startup_script": null
+          "shutdown_script": null,
+          "shutdown_script_timeout": 300,
+          "startup_script": null,
+          "startup_script_behavior": null,
+          "startup_script_timeout": 300,
+          "troubleshooting_url": null
         },
         "after_unknown": {
+          "display_apps": true,
           "id": true,
           "init_script": true,
+          "metadata": [],
           "token": true
         },
         "before_sensitive": false,
         "after_sensitive": {
+          "display_apps": [],
+          "metadata": [],
           "token": true
         }
       }
@@ -84,7 +114,9 @@
       "name": "main",
       "provider_name": "registry.terraform.io/coder/coder",
       "change": {
-        "actions": ["create"],
+        "actions": [
+          "create"
+        ],
         "before": null,
         "after": {
           "instance_id": "example"
@@ -104,7 +136,9 @@
       "name": "main",
       "provider_name": "registry.terraform.io/hashicorp/null",
       "change": {
-        "actions": ["create"],
+        "actions": [
+          "create"
+        ],
         "before": null,
         "after": {
           "triggers": null
@@ -122,7 +156,7 @@
       "coder": {
         "name": "coder",
         "full_name": "registry.terraform.io/coder/coder",
-        "version_constraint": "0.5.0"
+        "version_constraint": "0.22.0"
       },
       "null": {
         "name": "null",
@@ -158,7 +192,10 @@
           "provider_config_key": "coder",
           "expressions": {
             "agent_id": {
-              "references": ["coder_agent.main.id", "coder_agent.main"]
+              "references": [
+                "coder_agent.main.id",
+                "coder_agent.main"
+              ]
             },
             "instance_id": {
               "constant_value": "example"
@@ -173,7 +210,9 @@
           "name": "main",
           "provider_config_key": "null",
           "schema_version": 0,
-          "depends_on": ["coder_agent.main"]
+          "depends_on": [
+            "coder_agent.main"
+          ]
         }
       ]
     }
@@ -181,7 +220,13 @@
   "relevant_attributes": [
     {
       "resource": "coder_agent.main",
-      "attribute": ["id"]
+      "attribute": [
+        "id"
+      ]
     }
-  ]
+  ],
+  "timestamp": "2024-10-28T20:08:00Z",
+  "applyable": true,
+  "complete": true,
+  "errored": false
 }

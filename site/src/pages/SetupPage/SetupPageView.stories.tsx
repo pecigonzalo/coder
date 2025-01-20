@@ -1,40 +1,38 @@
-import { action } from "@storybook/addon-actions"
-import { Story } from "@storybook/react"
-import { SetupPageView, SetupPageViewProps } from "./SetupPageView"
+import type { Meta, StoryObj } from "@storybook/react";
+import { chromatic } from "testHelpers/chromatic";
+import { mockApiError } from "testHelpers/entities";
+import { SetupPageView } from "./SetupPageView";
 
-export default {
-  title: "pages/SetupPageView",
-  component: SetupPageView,
-}
+const meta: Meta<typeof SetupPageView> = {
+	title: "pages/SetupPage",
+	parameters: { chromatic },
+	component: SetupPageView,
+};
 
-const Template: Story<SetupPageViewProps> = (args: SetupPageViewProps) => (
-  <SetupPageView {...args} />
-)
+export default meta;
+type Story = StoryObj<typeof SetupPageView>;
 
-export const Ready = Template.bind({})
-Ready.args = {
-  onSubmit: action("submit"),
-  isCreating: false,
-}
+export const Ready: Story = {};
 
-export const UnknownError = Template.bind({})
-UnknownError.args = {
-  onSubmit: action("submit"),
-  isCreating: false,
-  genericError: "Something went wrong",
-}
+export const FormError: Story = {
+	args: {
+		error: mockApiError({
+			validations: [{ field: "username", detail: "Username taken" }],
+		}),
+	},
+};
 
-export const FormError = Template.bind({})
-FormError.args = {
-  onSubmit: action("submit"),
-  isCreating: false,
-  formErrors: {
-    username: "Username taken",
-  },
-}
+export const TrialError: Story = {
+	args: {
+		error: mockApiError({
+			message: "Couldn't generate trial!",
+			detail: "It looks like your team is already trying Coder.",
+		}),
+	},
+};
 
-export const Loading = Template.bind({})
-Loading.args = {
-  onSubmit: action("submit"),
-  isCreating: true,
-}
+export const Loading: Story = {
+	args: {
+		isLoading: true,
+	},
+};
